@@ -284,6 +284,81 @@ h3 {
   color: #4338ca;
 }
 
+.card-section {
+  margin-top: 28px;
+  text-align: left;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding-bottom: 6px;
+  border-bottom: 2px solid #e5e7eb;
+  font-size: 22px;
+}
+
+.section-title.free {
+  color: #166534;
+  border-color: #86efac;
+}
+
+.section-title.paid {
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+.section-title.web {
+  color: #1d4ed8;
+  border-color: #93c5fd;
+}
+
+.web-note {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.web-search {
+  margin-top: 24px;
+}
+
+.web-search button {
+  padding: 11px 22px;
+  border: 1px solid #93c5fd;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.web-search button:hover:not(:disabled) {
+  background: #dbeafe;
+}
+
+.web-search button:disabled {
+  color: #9ca3af;
+  border-color: #e5e7eb;
+  background: #f9fafb;
+  cursor: not-allowed;
+}
+
+.section-title.unknown {
+  color: #4b5563;
+}
+
+.section-count {
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));

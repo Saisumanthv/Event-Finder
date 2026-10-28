@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
-import { API_URL, LEARNING_PATH_URL, RECOMMEND_URL, SEARCH_URL } from "../config.js";
+import {
+  API_URL,
+  LEARNING_PATH_URL,
+  RECOMMEND_URL,
+  SEARCH_URL,
+  WEB_SEARCH_URL,
+} from "../config.js";
 import Card, { normalizeCard } from "./Card.jsx";
+import CardSections from "./CardSections.jsx";
 import SearchBox from "./SearchBox.jsx";
 import ProfileForm, {
   isProfileEmpty,
@@ -54,6 +61,11 @@ export default function WebhookDraft() {
   const [heading, setHeading] = useState("");
   const [chips, setChips] = useState([]);
   const [overview, setOverview] = useState("");
+  const [isPath, setIsPath] = useState(false);
+  const [lastQuery, setLastQuery] = useState("");
+  const [webCards, setWebCards] = useState([]);
+  const [webLoading, setWebLoading] = useState(false);
+  const [webMessage, setWebMessage] = useState("");
   const [cards, setCards] = useState([]);
   const [raw, setRaw] = useState(null);
 
@@ -68,8 +80,35 @@ export default function WebhookDraft() {
     setHeading("");
     setChips([]);
     setOverview("");
+    setIsPath(false);
+    setLastQuery("");
+    setWebCards([]);
+    setWebMessage("");
     setCards([]);
     setRaw(null);
+  }
+
+  async function handleWebSearch() {
+    setWebLoading(true);
+    setWebMessage("");
+    try {
+      const res = await fetch(WEB_SEARCH_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: lastQuery }),
+      });
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      const data = await res.json();
+      const found = (data.results || []).map(normalizeCard);
+      setWebCards(found);
+      if (found.length === 0) {
+        setWebMessage(data.message || "The web search found nothing for that query.");
+      }
+    } catch (err) {
+      setWebMessage(err.message || "Something went wrong");
+    } finally {
+      setWebLoading(false);
+    }
   }
 
   async function handlePath(goal) {
@@ -86,6 +125,7 @@ export default function WebhookDraft() {
       // the step's why_next line is shown in the card's highlighted reason slot
       setCards(path.map((step) => normalizeCard({ ...step, reason: step.why_next })));
       setHeading("Your learning path");
+      setIsPath(true);
       setOverview(data.overview || "");
       if (path.length === 0) {
         setNotice(data.message || "Nothing in the current listings fits that goal yet.");
@@ -112,6 +152,7 @@ export default function WebhookDraft() {
       const results = data.results || [];
       setCards(results.map(normalizeCard));
       setHeading("Search results");
+      setLastQuery(query);
       setChips(filterChips(data.filters || {}));
       if (results.length === 0) {
         setNotice("No results match your search. Try different words or fewer filters.");
@@ -222,11 +263,41 @@ export default function WebhookDraft() {
         </div>
       )}
 
-      <div className="grid">
-        {cards.map((c, i) => (
-          <Card card={c} key={c.id || i} />
-        ))}
-      </div>
+      {isPath ? (
+        <div className="grid">
+          {cards.map((c, i) => (
+            <Card card={c} key={c.id || i} />
+          ))}
+        </div>
+      ) : (
+        <CardSections cards={cards} />
+      )}
+
+      {lastQuery && !loading && (
+        <div className="web-search">
+          <button onClick={handleWebSearch} disabled={webLoading}>
+            🌐 Search the web for more
+          </button>
+        </div>
+      )}
+      {webLoading && <div className="spinner" role="status" aria-label="Searching the web" />}
+      {webMessage && <p className="status">{webMessage}</p>}
+      {webCards.length > 0 && (
+        <section className="card-section">
+          <h3 className="section-title web">
+            From the web <span className="section-count">{webCards.length}</span>
+          </h3>
+          <p className="web-note">
+            Found by web search, not from our listed sites. Dates and prices may be less
+            accurate, so check the page before you rely on them.
+          </p>
+          <div className="grid">
+            {webCards.map((c, i) => (
+              <Card card={c} key={c.id || i} />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

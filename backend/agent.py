@@ -1,9 +1,7 @@
 import json
 import uuid
-from urllib.parse import urljoin
 
-import requests
-from bs4 import BeautifulSoup
+from google import genai
 from google.adk.agents import LlmAgent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -12,117 +10,6 @@ from google.genai import types
 APP_NAME = "draft_generator_agent"
 USER_ID = "user"
 MODEL = "gemini-3.5-flash"
-
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-GFG_EVENTS_API = (
-    "https://practiceapiorigin.geeksforgeeks.org/api/vr/events/"
-    "?page_number=1&sub_type=all&type=all"
-)
-UNSTOP_API = (
-    "https://unstop.com/api/public/opportunity/search-result"
-    "?opportunity=hackathons&per_page=30&oppstatus=open"
-)
-
-
-def _gfg_cost(price, promotional_price) -> str:
-    """'paid' if any price is above zero, 'free' if both are zero, else unknown."""
-    try:
-        price = float(price or 0)
-        promotional = float(promotional_price or 0)
-    except (TypeError, ValueError):
-        return ""
-    if price > 0:
-        return "paid"
-    return "free" if promotional == 0 else ""
-
-
-def _gfg_events() -> str:
-    results = requests.get(GFG_EVENTS_API, timeout=10, headers=HEADERS).json()["results"]
-    lines = []
-    for e in results.get("upcoming", []):
-        if e.get("type") == 3:
-            link = f"https://practice.geeksforgeeks.org/contest/{e['slug']}"
-        else:
-            link = f"https://www.geeksforgeeks.org/event/{e['slug']}"
-        lines.append(
-            f"title: {e.get('title')} | overview: {e.get('overview')} | "
-            f"date: {e.get('date')} {e.get('time')} | mode: {e.get('event_mode')} | "
-            f"cost: {_gfg_cost(e.get('price'), e.get('promotional_price'))} | link: {link}"
-        )
-    return "\n".join(lines) or "No upcoming events found."
-
-
-def _unstop_hackathons() -> str:
-    items = requests.get(UNSTOP_API, timeout=10, headers=HEADERS).json()["data"]["data"]
-    lines = []
-    for o in items:
-        reg = o.get("regnRequirements") or {}
-        address = o.get("address_with_country_logo")
-        address = address.get("address") if isinstance(address, dict) else address
-        lines.append(
-            f"title: {o.get('title')} | organiser: {(o.get('organisation') or {}).get('name')} | "
-            f"mode: {o.get('region') or ''} | location: {str(address or '')[:80]} | "
-            f"registration ends: {reg.get('end_regn_dt')} | {reg.get('remain_days')} | "
-            f"team size: {reg.get('min_team_size')}-{reg.get('max_team_size')} | "
-            f"cost: {'paid' if o.get('isPaid') else 'free'} | link: {o.get('seo_url')}"
-        )
-    return "\n".join(lines) or "No open hackathons found."
-
-
-def fetch_page(url: str) -> str:
-    """Download a web page and return its visible text followed by the links on it.
-
-    Every returned item carries its own `link` (or a LINKS section), which is the
-    only source of item URLs.
-    """
-    try:
-        if url.rstrip("/") == "https://www.geeksforgeeks.org/events":
-            return _gfg_events()
-        if url.rstrip("/") == "https://unstop.com/hackathons":
-            return _unstop_hackathons()
-
-        response = requests.get(url, timeout=10, headers=HEADERS)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        for tag in soup(["script", "style"]):
-            tag.decompose()
-
-        links = {}
-        for a in soup.find_all("a", href=True):
-            href = urljoin(url, a["href"])
-            if href.startswith("http") and href not in links:
-                links[href] = a.get_text(" ", strip=True)[:80]
-        link_lines = "\n".join(f"{text} -> {href}" for href, text in links.items())
-
-        text = soup.get_text(separator=" ", strip=True)[:12000]
-        return f"{text}\n\nLINKS:\n{link_lines[:8000]}"
-    except Exception as e:
-        return f"Error fetching page: {e}"
-
-
-INSTRUCTION = (
-    "You receive an action and a URL. Call fetch_page on the URL. "
-    "Extract every distinct item listed on the page, not just the first few. "
-    "Respond with ONLY valid JSON, no markdown, no extra text, in this shape: "
-    "{status: 'success', action, title, items: [...]}. "
-    "Each item has: title, subtitle, category, description, date, location, mode, "
-    "tags (max 3, array), cost, link. "
-    "cost is 'free' or 'paid': copy a `cost:` value from the tool output, or use 'paid' "
-    "when the page shows a price (for example ₹6999), and leave it empty otherwise. "
-    "Use an empty string for anything you can't find. "
-    "Each item's link MUST be the specific URL of that item, copied exactly from the "
-    "tool output (a `link:` value, or the matching entry in LINKS). "
-    "Never use the page URL you were given, never invent or guess a URL, and "
-    "never use category or navigation links; use an empty string if there is none. "
-    "If anything fails, respond with {status: 'error', items: []}."
-)
-
-root_agent = LlmAgent(
-    name="web_scraper_agent",
-    model=MODEL,
-    instruction=INSTRUCTION,
-    tools=[fetch_page],
-)
 
 RECOMMEND_INSTRUCTION = (
     "You rank items for a user. You receive a JSON profile, a limit and a JSON list of "
@@ -373,3 +260,76 @@ async def plan_learning_path(
         return data
 
     return await ask_json(path_agent, prompt, extract)
+
+
+WEB_SEARCH_INSTRUCTION = (
+    "You find upcoming events, hackathons and online courses on the web with Google "
+    "Search. You receive today's date and the user's query. Search the web, then list up "
+    "to 10 matching items that really appear in the results and are not already over. "
+    "For each item give: its name, its type (event, hackathon or course), its start or "
+    "deadline date only if a page states it, location and mode (online, offline or "
+    "hybrid) only if stated, whether it is free or paid only if stated, a one-sentence "
+    "description, and the website domain (for example devpost.com) it came from. "
+    "Never invent items, dates or prices, and do not write URLs."
+)
+
+WEB_FORMAT_INSTRUCTION = (
+    "You receive a plain-text list of events, hackathons and courses. Convert it to "
+    "JSON in exactly this shape: "
+    '{"items": [{"title": "...", "type": "event", "description": "...", '
+    '"date": "YYYY-MM-DD", "location": "...", "mode": "online", "cost": "free", '
+    '"domain": "example.com"}]}. '
+    "type is one of event, hackathon or course. description is plain text of 200 "
+    "characters or fewer. Use an empty string for date, location, mode or cost when the "
+    "text does not state it; mode is online, offline or hybrid; cost is free or paid. "
+    "domain is the website domain given for the item, with no path. Include only what "
+    "the text says, add nothing, and never write a URL."
+)
+
+
+async def search_web(query: str, today: str) -> tuple[list[dict], list[dict]]:
+    """Google-grounded web search; returns structured items and the pages it cited.
+
+    Step one searches and answers in prose, which reliably produces cited pages (a
+    JSON-only prompt often skips the search). Step two only reformats that prose, with
+    no tools. The links come from the cited pages, never from model text. Raises if
+    it cannot get a cited answer.
+    """
+    client = genai.Client()
+    search_config = types.GenerateContentConfig(
+        system_instruction=WEB_SEARCH_INSTRUCTION,
+        tools=[types.Tool(google_search=types.GoogleSearch())],
+    )
+    format_config = types.GenerateContentConfig(
+        system_instruction=WEB_FORMAT_INSTRUCTION,
+        response_mime_type="application/json",
+    )
+
+    last_error = None
+    for _ in range(3):
+        try:
+            found = await client.aio.models.generate_content(
+                model=MODEL,
+                contents=f"today: {today}\nquery: {json.dumps(query)}",
+                config=search_config,
+            )
+            metadata = found.candidates[0].grounding_metadata
+            chunks = (metadata.grounding_chunks or []) if metadata else []
+            pages = [
+                {"domain": c.web.title or "", "uri": c.web.uri}
+                for c in chunks
+                if c.web and c.web.uri
+            ]
+            if not pages or not found.text:
+                raise ValueError("the search returned no cited pages")
+
+            formatted = await client.aio.models.generate_content(
+                model=MODEL, contents=found.text, config=format_config
+            )
+            items = parse_json_text(formatted.text or "")["items"]
+            if not isinstance(items, list):
+                raise ValueError("items is not a list")
+            return items, pages
+        except Exception as e:
+            last_error = e
+    raise last_error

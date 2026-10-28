@@ -14,6 +14,7 @@ export function normalizeCard(item) {
     location: item.location || "",
     mode: item.mode || "",
     cost: item.cost || "",
+    source: item.source || "",
     tags: Array.isArray(item.tags) ? item.tags.slice(0, 5) : [],
     link: item.link || "",
     reason: item.reason || "",
@@ -46,6 +47,7 @@ export default function Card({ card }) {
         {card.location && <li>📍 {card.location}</li>}
         {card.mode && <li>💻 {card.mode}</li>}
         {card.cost && <li className="cost">💰 {card.cost}</li>}
+        {card.source && <li>🌐 {card.source}</li>}
       </ul>
       {card.prerequisites.length > 0 && (
         <p className="prereq">

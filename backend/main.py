@@ -3,6 +3,9 @@ import hashlib
 import re
 import time
 from datetime import date, datetime
+from urllib.parse import urlparse
+
+import requests
 
 from dotenv import load_dotenv
 
@@ -14,21 +17,15 @@ from pydantic import BaseModel, Field
 
 from agent import (
     enrich_items,
-    parse_json_text,
     parse_search_query,
     plan_learning_path,
     recommend_items,
-    root_agent,
-    run_agent_text,
+    search_web,
 )
-
-ACTION_URLS = {
-    "event_details": "https://www.geeksforgeeks.org/events",
-    "hackathon_details": "https://unstop.com/hackathons",
-    "new_courses": "https://www.geeksforgeeks.org/courses",
-}
+from sources import SOURCES
 
 CACHE_TTL_SECONDS = 600
+ENRICH_CHUNK_SIZE = 20
 item_cache: dict[str, tuple[float, list[dict]]] = {}
 
 app = FastAPI()
@@ -57,6 +54,10 @@ class SearchRequest(BaseModel):
     query: str = Field(max_length=300)
 
 
+class WebSearchRequest(BaseModel):
+    query: str = Field(max_length=300)
+
+
 class PathRequest(BaseModel):
     goal: str = Field(max_length=300)
     max_steps: int = Field(4, ge=2, le=6)
@@ -66,10 +67,6 @@ class RecommendRequest(BaseModel):
     profile: Profile = Profile()
     limit: int = Field(5, ge=1, le=100)
     action: str | None = None  # restrict to one source; None means all sources
-
-
-async def run_agent(action: str, url: str) -> str:
-    return await run_agent_text(root_agent, f"action: {action}, url: {url}")
 
 
 def add_ids(action: str, data) -> None:
@@ -131,31 +128,70 @@ def merge_enrichment(raw: list, items: list[dict]) -> None:
             item["tags"] = tags
 
 
+async def enrich_chunk(chunk: list[dict]) -> None:
+    try:
+        merge_enrichment(await enrich_items(chunk), chunk)
+    except Exception as e:
+        print(f"enrich failed: {e!r}")
+
+
 async def enrich(items: list[dict]) -> None:
-    """Add model-generated fields to items; a failure just leaves them blank."""
+    """Add model-generated fields to items; a failed batch just leaves them blank."""
     items = [item for item in items if isinstance(item, dict)]
     for item in items:
         item.setdefault("summary", "")
         item.setdefault("difficulty", "")
         item.setdefault("prerequisites", [])
-    try:
-        merge_enrichment(await enrich_items(items), items)
-    except Exception as e:
-        print(f"enrich failed: {e!r}")
+    chunks = [items[i : i + ENRICH_CHUNK_SIZE] for i in range(0, len(items), ENRICH_CHUNK_SIZE)]
+    await asyncio.gather(*(enrich_chunk(chunk) for chunk in chunks))
+
+
+CARD_DEFAULTS = {
+    "title": "",
+    "subtitle": "",
+    "category": "",
+    "description": "",
+    "date": "",
+    "location": "",
+    "mode": "",
+    "tags": [],
+    "cost": "",
+    "link": "",
+}
+
+
+def title_key(item: dict) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(item.get("title", "")).lower())
 
 
 async def fetch_items(action: str) -> dict:
-    """Scrape one source through the agent; returns the parsed result with item ids."""
-    text = await run_agent(action, ACTION_URLS[action])
-    data = parse_json_text(text)
-    add_ids(action, data)
-    items = data.get("items") if isinstance(data, dict) else None
-    if isinstance(items, list) and items:
-        for item in items:
-            if isinstance(item, dict) and item.get("cost") not in COSTS:
+    """Collect one category from all its sources, then enrich and cache it."""
+    sources = SOURCES[action]
+    results = await asyncio.gather(
+        *(asyncio.to_thread(fetch) for fetch in sources.values()), return_exceptions=True
+    )
+
+    items = []
+    seen_titles = set()
+    for name, result in zip(sources, results):
+        if isinstance(result, Exception):
+            print(f"source {name} failed: {result!r}")
+            continue
+        for raw in result:
+            item = {**CARD_DEFAULTS, **raw, "source": name}
+            if item["cost"] not in COSTS:
                 item["cost"] = ""
-        await enrich(items)
-        item_cache[action] = (time.time(), items)
+            if item["link"] and title_key(item) not in seen_titles:
+                seen_titles.add(title_key(item))
+                items.append(item)
+
+    if not items:
+        return {"status": "error", "message": "No source returned any items", "items": []}
+
+    data = {"status": "success", "action": action, "items": items}
+    add_ids(action, data)
+    await enrich(items)
+    item_cache[action] = (time.time(), items)
     return data
 
 
@@ -170,7 +206,7 @@ async def cached_items(action: str) -> list[dict]:
 
 @app.post("/button-action")
 async def button_action(body: ButtonAction):
-    if body.action not in ACTION_URLS:
+    if body.action not in SOURCES:
         raise HTTPException(status_code=400, detail="Unknown action")
 
     try:
@@ -380,7 +416,7 @@ async def search(body: SearchRequest):
         filters = keyword_filters(query)
         fallback = True
 
-    actions = [TYPE_ACTIONS[filters["type"]]] if "type" in filters else list(ACTION_URLS)
+    actions = [TYPE_ACTIONS[filters["type"]]] if "type" in filters else list(SOURCES)
     items = await gather_items(actions)
     results = [item for item in items if matches_filters(item, filters)]
     return {"filters": filters, "results": results, "fallback": fallback}
@@ -456,7 +492,7 @@ async def learning_path(body: PathRequest):
     if not goal:
         raise HTTPException(status_code=400, detail="Empty goal")
 
-    items = [i for i in await gather_items(list(ACTION_URLS)) if not is_past(i)]
+    items = [i for i in await gather_items(list(SOURCES)) if not is_past(i)]
     if not items:
         return {"overview": "", "path": [], "fallback": False, "message": "No items available"}
 
@@ -482,9 +518,9 @@ async def learning_path(body: PathRequest):
 
 @app.post("/recommend")
 async def recommend(body: RecommendRequest):
-    if body.action and body.action not in ACTION_URLS:
+    if body.action and body.action not in SOURCES:
         raise HTTPException(status_code=400, detail="Unknown action")
-    actions = [body.action] if body.action else list(ACTION_URLS)
+    actions = [body.action] if body.action else list(SOURCES)
 
     items = await gather_items(actions)
 
@@ -505,3 +541,94 @@ async def recommend(body: RecommendRequest):
         "recommendations": fallback_items(body.profile, items, body.limit),
         "fallback": True,
     }
+
+
+def site_name(value) -> str:
+    """Lower-case website name without a leading 'www.'."""
+    text = str(value or "").strip().lower()
+    try:
+        host = urlparse(text if "//" in text else "//" + text).netloc
+    except ValueError:
+        return ""
+    return host.removeprefix("www.")
+
+
+def resolve_url(uri: str) -> str:
+    """Follow a search-result redirect to the real page address; keep `uri` on failure."""
+    try:
+        with requests.get(uri, timeout=8, stream=True, headers={"User-Agent": "Mozilla/5.0"}) as r:
+            return r.url
+    except requests.RequestException:
+        return uri
+
+
+def same_site(a: str, b: str) -> bool:
+    """True if two site names are equal or one is a subdomain of the other."""
+    return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
+
+
+def title_overlap(title: str, page: dict) -> int:
+    """How many title words appear in the page address, ignoring the site's own name."""
+    address = page["url"].lower().replace(site_name(page["domain"]), "")
+    words = set(re.findall(r"[a-z0-9]{3,}", title.lower()))
+    return sum(1 for w in words if w in address)
+
+
+def build_web_cards(items: list, pages: list[dict]) -> list[dict]:
+    """Turn the model's web results into cards; links come only from cited pages."""
+    cards = []
+    seen = set()
+    for raw in items:
+        if not isinstance(raw, dict) or not str(raw.get("title", "")).strip():
+            continue
+        domain = site_name(raw.get("domain"))
+        candidates = [p for p in pages if same_site(site_name(p["domain"]), domain)]
+        if not candidates:
+            continue
+        title = str(raw["title"]).strip()[:150]
+        page = max(candidates, key=lambda p: title_overlap(title, p))
+        when = parse_date(raw.get("date"))
+        # a page sharing no words with the title is probably a listing, not this item
+        if title_overlap(title, page) == 0:
+            continue
+        if (when and when < date.today()) or page["url"] in seen:
+            continue
+        seen.add(page["url"])
+
+        description = str(raw.get("description") or "").strip()[:300]
+        mode = str(raw.get("mode", "")).strip().lower()
+        cost = str(raw.get("cost", "")).strip().lower()
+        kind = str(raw.get("type", "")).strip().lower()
+        cards.append(
+            {
+                **CARD_DEFAULTS,
+                "id": "web-" + hashlib.sha1(page["url"].encode()).hexdigest()[:8],
+                "title": title,
+                "category": kind.capitalize() if kind in TYPE_ACTIONS else "",
+                "description": "" if URL_PATTERN.search(description) else description,
+                "date": when.isoformat() if when else "",
+                "location": "" if URL_PATTERN.search(str(raw.get("location", ""))) else str(raw.get("location") or "")[:80],
+                "mode": mode if mode in MODE_WORDS else "",
+                "cost": cost if cost in COSTS else "",
+                "link": page["url"],
+                "source": site_name(page["domain"]),
+            }
+        )
+    return cards
+
+
+@app.post("/web-search")
+async def web_search(body: WebSearchRequest):
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Empty query")
+
+    try:
+        items, pages = await search_web(query, date.today().isoformat())
+        urls = await asyncio.gather(*(asyncio.to_thread(resolve_url, p["uri"]) for p in pages))
+        for page, url in zip(pages, urls):
+            page["url"] = url
+        return {"results": build_web_cards(items, pages)}
+    except Exception as e:
+        print(f"web-search failed: {e!r}")
+        return {"results": [], "message": "Web search is unavailable right now."}
