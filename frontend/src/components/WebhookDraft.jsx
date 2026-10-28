@@ -224,26 +224,25 @@ export default function WebhookDraft() {
         <span>or</span>
       </div>
 
-      <ProfileForm profile={profile} onChange={setProfile} disabled={loading}>
-        <div className="buttons">
-          {BUTTONS.map((b) => (
-            <button key={b.action} disabled={loading} onClick={() => handleClick(b)}>
-              {b.label}
-            </button>
-          ))}
-        </div>
-      </ProfileForm>
-
-      <div className="or-divider">
-        <span>or</span>
-      </div>
-
       <SearchBox
         onSearch={handlePath}
         disabled={loading}
         placeholder="Tell us your goal, e.g. get into machine learning"
         buttonLabel="Build my path"
       />
+
+      <details className="manual">
+        <summary>Browse and filter manually</summary>
+        <ProfileForm profile={profile} onChange={setProfile} disabled={loading}>
+          <div className="buttons">
+            {BUTTONS.map((b) => (
+              <button key={b.action} disabled={loading} onClick={() => handleClick(b)}>
+                {b.label}
+              </button>
+            ))}
+          </div>
+        </ProfileForm>
+      </details>
 
       {loading && <div className="spinner" role="status" aria-label="Loading" />}
       {error && <p className="status error">{error}</p>}

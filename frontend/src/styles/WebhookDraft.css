@@ -157,6 +157,28 @@ h3 {
   text-transform: capitalize;
 }
 
+.manual {
+  margin-top: 20px;
+  text-align: left;
+}
+
+.manual summary {
+  display: inline-block;
+  padding: 6px 4px;
+  color: #4f46e5;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.manual summary:hover {
+  text-decoration: underline;
+}
+
+.manual[open] summary {
+  margin-bottom: 4px;
+}
+
 .profile-section {
   margin-top: 16px;
   padding: 16px;
