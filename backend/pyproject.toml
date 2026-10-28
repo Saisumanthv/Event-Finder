@@ -1,0 +1,16 @@
+[project]
+name = "draft-generator-agent-backend"
+version = "0.1.0"
+description = "FastAPI backend for the draft generator agent"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4",
+    "fastapi",
+    "google-adk",
+    "python-dotenv",
+    "requests",
+    "uvicorn",
+]
+
+[tool.uv]
+package = false
