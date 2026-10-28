@@ -12,7 +12,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from agent import enrich_items, parse_json_text, recommend_items, root_agent, run_agent_text
+from agent import (
+    enrich_items,
+    parse_json_text,
+    parse_search_query,
+    recommend_items,
+    root_agent,
+    run_agent_text,
+)
 
 ACTION_URLS = {
     "event_details": "https://www.geeksforgeeks.org/events",
@@ -45,6 +52,10 @@ class Profile(BaseModel):
     location: str = ""
 
 
+class SearchRequest(BaseModel):
+    query: str = Field(max_length=300)
+
+
 class RecommendRequest(BaseModel):
     profile: Profile = Profile()
     limit: int = Field(5, ge=1, le=20)
@@ -67,6 +78,7 @@ def add_ids(action: str, data) -> None:
 
 
 DIFFICULTIES = {"beginner", "intermediate", "advanced"}
+COSTS = {"free", "paid"}
 URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
 
 
@@ -133,6 +145,9 @@ async def fetch_items(action: str) -> dict:
     add_ids(action, data)
     items = data.get("items") if isinstance(data, dict) else None
     if isinstance(items, list) and items:
+        for item in items:
+            if isinstance(item, dict) and item.get("cost") not in COSTS:
+                item["cost"] = ""
         await enrich(items)
         item_cache[action] = (time.time(), items)
     return data
@@ -220,7 +235,8 @@ def date_sort_key(item: dict):
 
 
 def item_text(item: dict) -> str:
-    fields = [item.get(k, "") for k in ("title", "subtitle", "category", "description")]
+    keys = ("title", "subtitle", "category", "description", "summary")
+    fields = [item.get(k, "") for k in keys]
     return " ".join(fields + list(item.get("tags") or [])).lower()
 
 
@@ -237,12 +253,8 @@ def fallback_items(profile: Profile, items: list[dict], limit: int) -> list[dict
     return [{**item, "rank": n, "reason": ""} for n, item in enumerate(ranked, 1)]
 
 
-@app.post("/recommend")
-async def recommend(body: RecommendRequest):
-    if body.action and body.action not in ACTION_URLS:
-        raise HTTPException(status_code=400, detail="Unknown action")
-    actions = [body.action] if body.action else list(ACTION_URLS)
-
+async def gather_items(actions: list[str]) -> list[dict]:
+    """Items from the given sources, de-duplicated by id; a failed source is skipped."""
     results = await asyncio.gather(
         *(cached_items(action) for action in actions), return_exceptions=True
     )
@@ -250,12 +262,125 @@ async def recommend(body: RecommendRequest):
     seen_ids = set()
     for result in results:
         if isinstance(result, Exception):
-            print(f"recommend fetch failed: {result!r}")
+            print(f"fetch failed: {result!r}")
             continue
         for item in result:
             if isinstance(item, dict) and item.get("id") not in seen_ids:
                 seen_ids.add(item["id"])
                 items.append(item)
+    return items
+
+
+TYPE_ACTIONS = {
+    "event": "event_details",
+    "hackathon": "hackathon_details",
+    "course": "new_courses",
+}
+MODE_WORDS = {
+    "online": ("online", "live", "self-paced", "virtual", "remote"),
+    "offline": ("offline", "in-person", "in person", "onsite", "on-site"),
+    "hybrid": ("hybrid",),
+}
+STOPWORDS = {
+    "a", "an", "and", "for", "find", "me", "show", "the", "to", "in", "on", "of",
+    "with", "some", "any", "get", "that", "are", "is", "i", "want", "looking",
+}
+
+
+def clean_filters(raw: dict) -> dict:
+    """Keep only valid filter keys and values from the model's reply."""
+    filters = {}
+
+    kind = str(raw.get("type", "")).strip().lower().rstrip("s")
+    if kind in TYPE_ACTIONS:
+        filters["type"] = kind
+    mode = str(raw.get("mode", "")).strip().lower()
+    if mode in MODE_WORDS:
+        filters["mode"] = mode
+    level = str(raw.get("level", "")).strip().lower()
+    if level in DIFFICULTIES:
+        filters["level"] = level
+    cost = str(raw.get("cost", "")).strip().lower()
+    if cost in COSTS:
+        filters["cost"] = cost
+
+    bounds = {}
+    for key in ("date_from", "date_to"):
+        try:
+            bounds[key] = datetime.strptime(str(raw.get(key, "")), "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    if len(bounds) == 2 and bounds["date_from"] > bounds["date_to"]:
+        bounds["date_from"], bounds["date_to"] = bounds["date_to"], bounds["date_from"]
+    filters.update({key: d.isoformat() for key, d in bounds.items()})
+
+    keywords = [k.lower() for k in clean_texts(raw.get("keywords"), 5, 30)]
+    if keywords:
+        filters["keywords"] = keywords
+    return filters
+
+
+def keyword_filters(query: str) -> dict:
+    """No-model fallback: treat the meaningful words in the query as keywords."""
+    words = re.findall(r"[a-z0-9+#.]+", query.lower())
+    keywords = [w for w in words if len(w) > 2 and w not in STOPWORDS]
+    return {"keywords": keywords[:5]} if keywords else {}
+
+
+def matches_filters(item: dict, filters: dict) -> bool:
+    """Plain-code filtering. An item whose value is unknown does not match a filter."""
+    if "mode" in filters:
+        mode = str(item.get("mode", "")).lower()
+        if not any(word in mode for word in MODE_WORDS[filters["mode"]]):
+            return False
+    if "level" in filters and item.get("difficulty") != filters["level"]:
+        return False
+    if "cost" in filters and item.get("cost") != filters["cost"]:
+        return False
+    if "date_from" in filters or "date_to" in filters:
+        item_date = parse_date(item.get("date"))
+        if item_date is None:
+            return False
+        if "date_from" in filters and item_date.isoformat() < filters["date_from"]:
+            return False
+        if "date_to" in filters and item_date.isoformat() > filters["date_to"]:
+            return False
+    if "keywords" in filters:
+        text = item_text(item)
+        if not any(k in text for k in filters["keywords"]):
+            return False
+    return True
+
+
+@app.post("/search")
+async def search(body: SearchRequest):
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Empty query")
+
+    today = date.today()
+    fallback = False
+    try:
+        raw = await parse_search_query(query, f"{today.isoformat()} ({today:%A})")
+        filters = clean_filters(raw)
+    except Exception as e:
+        print(f"search parse failed: {e!r}")
+        filters = keyword_filters(query)
+        fallback = True
+
+    actions = [TYPE_ACTIONS[filters["type"]]] if "type" in filters else list(ACTION_URLS)
+    items = await gather_items(actions)
+    results = [item for item in items if matches_filters(item, filters)]
+    return {"filters": filters, "results": results, "fallback": fallback}
+
+
+@app.post("/recommend")
+async def recommend(body: RecommendRequest):
+    if body.action and body.action not in ACTION_URLS:
+        raise HTTPException(status_code=400, detail="Unknown action")
+    actions = [body.action] if body.action else list(ACTION_URLS)
+
+    items = await gather_items(actions)
 
     if not items:
         return {"recommendations": [], "fallback": False, "message": "No items available"}

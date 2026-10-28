@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { API_URL, RECOMMEND_URL } from "../config.js";
+import { API_URL, RECOMMEND_URL, SEARCH_URL } from "../config.js";
 import Card, { normalizeCard } from "./Card.jsx";
+import SearchBox from "./SearchBox.jsx";
 import ProfileForm, {
   isProfileEmpty,
   loadProfile,
@@ -31,12 +32,27 @@ function normalizeCards(list) {
   return list.slice(0, 10).map(normalizeCard);
 }
 
+function filterChips(filters) {
+  const chips = ["type", "mode", "level", "cost"]
+    .filter((key) => filters[key])
+    .map((key) => filters[key]);
+  if (filters.date_from && filters.date_to) {
+    chips.push(`${filters.date_from} to ${filters.date_to}`);
+  } else if (filters.date_from) {
+    chips.push(`from ${filters.date_from}`);
+  } else if (filters.date_to) {
+    chips.push(`until ${filters.date_to}`);
+  }
+  return chips.concat(filters.keywords || []);
+}
+
 export default function WebhookDraft() {
   const [profile, setProfile] = useState(loadProfile);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [personalized, setPersonalized] = useState(false);
+  const [heading, setHeading] = useState("");
+  const [chips, setChips] = useState([]);
   const [cards, setCards] = useState([]);
   const [raw, setRaw] = useState(null);
 
@@ -44,13 +60,44 @@ export default function WebhookDraft() {
     saveProfile(profile);
   }, [profile]);
 
-  async function handleClick({ action, label }) {
+  function startRequest() {
     setLoading(true);
     setError("");
     setNotice("");
-    setPersonalized(false);
+    setHeading("");
+    setChips([]);
     setCards([]);
     setRaw(null);
+  }
+
+  async function handleSearch(query) {
+    startRequest();
+    try {
+      const res = await fetch(SEARCH_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      const data = await res.json();
+      const results = data.results || [];
+      setCards(results.slice(0, 20).map(normalizeCard));
+      setHeading("Search results");
+      setChips(filterChips(data.filters || {}));
+      if (results.length === 0) {
+        setNotice("No results match your search. Try different words or fewer filters.");
+      } else if (data.fallback) {
+        setNotice("Smart search is unavailable, so this is a plain keyword match.");
+      }
+    } catch (err) {
+      setError(err.message || "Something went wrong");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleClick({ action, label }) {
+    startRequest();
 
     // With a profile, ask for recommendations for this source; otherwise the default call.
     const useProfile = !isProfileEmpty(profile);
@@ -70,7 +117,7 @@ export default function WebhookDraft() {
       if (useProfile) {
         const recs = data.recommendations || [];
         setCards(recs.map(normalizeCard));
-        setPersonalized(true);
+        setHeading("Recommended for you");
         if (recs.length === 0) {
           setNotice(
             data.message || "Nothing matches your profile. Clear the filters to see everything."
@@ -101,23 +148,38 @@ export default function WebhookDraft() {
         Find events, hackathons and courses to showcase your skills or learn new ones.
       </p>
 
-      <ProfileForm profile={profile} onChange={setProfile} disabled={loading} />
+      <SearchBox onSearch={handleSearch} disabled={loading} />
 
-      <div className="buttons">
-        {BUTTONS.map((b) => (
-          <button key={b.action} disabled={loading} onClick={() => handleClick(b)}>
-            {b.label}
-          </button>
-        ))}
+      <div className="or-divider">
+        <span>or</span>
       </div>
 
-      {loading && <p className="status">Loading...</p>}
+      <ProfileForm profile={profile} onChange={setProfile} disabled={loading}>
+        <div className="buttons">
+          {BUTTONS.map((b) => (
+            <button key={b.action} disabled={loading} onClick={() => handleClick(b)}>
+              {b.label}
+            </button>
+          ))}
+        </div>
+      </ProfileForm>
+
+      {loading && <div className="spinner" role="status" aria-label="Loading" />}
       {error && <p className="status error">{error}</p>}
       {notice && <p className="status">{notice}</p>}
 
       {raw && <pre className="raw">{JSON.stringify(raw, null, 2)}</pre>}
 
-      {personalized && cards.length > 0 && <h2 className="results-heading">Recommended for you</h2>}
+      {heading && !loading && !error && <h2 className="results-heading">{heading}</h2>}
+      {chips.length > 0 && (
+        <div className="chips">
+          {chips.map((c, i) => (
+            <span key={i} className="chip">
+              {c}
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className="grid">
         {cards.map((c, i) => (

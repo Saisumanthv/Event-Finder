@@ -44,7 +44,7 @@ export function profileToRequest(profile) {
   };
 }
 
-export default function ProfileForm({ profile, onChange, disabled }) {
+export default function ProfileForm({ profile, onChange, disabled, children }) {
   function update(field, value) {
     onChange({ ...profile, [field]: value });
   }
@@ -108,6 +108,8 @@ export default function ProfileForm({ profile, onChange, disabled }) {
       </div>
 
       <p className="hint">Leave any filter empty to use the default (no filtering).</p>
+
+      {children}
     </section>
   );
 }
