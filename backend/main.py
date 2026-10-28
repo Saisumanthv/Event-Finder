@@ -3,7 +3,9 @@ import hashlib
 import json
 import re
 import time
+from contextlib import asynccontextmanager
 from datetime import date, datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
@@ -31,9 +33,48 @@ from sources import SOURCES
 
 CACHE_TTL_SECONDS = 600
 ENRICH_CHUNK_SIZE = 20
-item_cache: dict[str, tuple[float, list[dict]]] = {}
+CACHE_FILE = Path(__file__).with_name("cache.json")
 
-app = FastAPI()
+
+def load_cache() -> dict[str, tuple[float, list[dict]]]:
+    """Items saved by an earlier run, so a restart does not re-scrape everything."""
+    try:
+        saved = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        return {a: (v["time"], v["items"]) for a, v in saved.items() if a in SOURCES}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def save_cache() -> None:
+    saved = {a: {"time": t, "items": items} for a, (t, items) in item_cache.items()}
+    try:
+        temp = CACHE_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps(saved), encoding="utf-8")
+        temp.replace(CACHE_FILE)
+    except OSError as e:
+        print(f"could not save cache: {e!r}")
+
+
+item_cache = load_cache()
+inflight: dict[str, asyncio.Task] = {}
+
+
+async def warm_cache() -> None:
+    """Refresh stale or missing categories in the background after startup."""
+    await asyncio.gather(*(cached_items(a) for a in SOURCES), return_exceptions=True)
+
+
+warm_task = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global warm_task
+    warm_task = asyncio.create_task(warm_cache())
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -201,14 +242,34 @@ async def fetch_items(action: str) -> dict:
     add_ids(action, data)
     await enrich(items)
     item_cache[action] = (time.time(), items)
+    save_cache()
     return data
 
 
+def start_fetch(action: str) -> asyncio.Task:
+    """One shared fetch per category, however many requests ask for it at once."""
+    task = inflight.get(action)
+    if task is None:
+        task = asyncio.create_task(fetch_items(action))
+        inflight[action] = task
+
+        def finished(done: asyncio.Task) -> None:
+            inflight.pop(action, None)
+            if not done.cancelled() and done.exception():
+                print(f"fetch {action} failed: {done.exception()!r}")
+
+        task.add_done_callback(finished)
+    return task
+
+
 async def cached_items(action: str) -> list[dict]:
+    """Serve cached items at once; if they are stale, refresh in the background."""
     cached = item_cache.get(action)
-    if cached and time.time() - cached[0] < CACHE_TTL_SECONDS:
+    if cached:
+        if time.time() - cached[0] >= CACHE_TTL_SECONDS:
+            start_fetch(action)
         return cached[1]
-    data = await fetch_items(action)
+    data = await start_fetch(action)
     items = data.get("items") if isinstance(data, dict) else None
     return items if isinstance(items, list) else []
 
@@ -219,7 +280,10 @@ async def button_action(body: ButtonAction):
         raise HTTPException(status_code=400, detail="Unknown action")
 
     try:
-        return await fetch_items(body.action)
+        items = await cached_items(body.action)
+        if not items:
+            return {"status": "error", "message": "No source returned any items", "items": []}
+        return {"status": "success", "action": body.action, "items": items}
     except Exception as e:
         print(f"button_action failed: {e!r}")
         return {"status": "error", "message": str(e)[:300], "items": []}

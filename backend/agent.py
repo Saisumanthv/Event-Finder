@@ -341,14 +341,17 @@ ASSISTANT_INSTRUCTION = (
     "online courses. Help the user find what they need by calling your tools; you have "
     "no knowledge of the current listings except what the tools return, so never answer "
     "from memory. You receive today's date and the user's request. "
-    "Plan before you act. Usually start with search_listings using sensible filters "
-    "(type is event, hackathon or course; call it once per type when the request spans "
-    "several). The filters are strict and an item with an unknown value never matches "
-    "it, so if you get few or no results, retry with fewer filters or other keywords. "
-    "Use get_details when you need an item's description or prerequisites to decide. "
+    "You have a budget of 6 tool calls, so plan before you act. Start broad: call "
+    "search_listings with the type and one or two keywords, and add mode, level or cost "
+    "filters only when the request clearly needs them. The filters are strict and an "
+    "item with an unknown value never matches one, so many filters at once usually give "
+    "zero results; on zero results, drop filters instead of adding more. Call it once per "
+    "type when the request spans several. Search results already include each item's "
+    "description, so use get_details only when you truly cannot decide without it. "
     "Use build_learning_path when the user wants a plan, a roadmap or a sequence. Use "
-    "search_the_web only when the listings clearly do not cover the request, and say in "
-    "your answer that those picks came from the web. Make at most 6 tool calls. "
+    "search_the_web as soon as the listings clearly do not cover the request, and say "
+    "in your answer that those picks came from the web. Keep one call in reserve so "
+    "you can still answer. "
     "When done, respond with ONLY valid JSON, no markdown, in this shape: "
     '{"answer": "...", "picks": [{"id": "...", "why": "..."}]}. '
     "answer is 1-3 plain sentences speaking to the user and saying what you found or did. "
@@ -361,6 +364,23 @@ ASSISTANT_INSTRUCTION = (
 )
 
 
+MAX_TOOL_CALLS = 6
+tool_call_counts: dict[str, int] = {}
+
+
+def limit_tool_calls(tool, args, tool_context):
+    """Refuse tool calls beyond MAX_TOOL_CALLS in one run so the model must answer."""
+    run_id = tool_context.invocation_id
+    tool_call_counts[run_id] = tool_call_counts.get(run_id, 0) + 1
+    if tool_call_counts[run_id] > MAX_TOOL_CALLS:
+        return {
+            "summary": "tool call limit reached",
+            "note": "No more tool calls are allowed. Give your final JSON answer now "
+            "using only what the earlier tool results showed.",
+        }
+    return None
+
+
 def build_assistant(tools: list) -> LlmAgent:
     """The tool-calling assistant; the caller supplies the tool functions."""
     return LlmAgent(
@@ -368,6 +388,7 @@ def build_assistant(tools: list) -> LlmAgent:
         model=MODEL,
         instruction=ASSISTANT_INSTRUCTION,
         tools=tools,
+        before_tool_callback=limit_tool_calls,
     )
 
 
@@ -392,8 +413,10 @@ async def run_assistant_turn(agent: LlmAgent, message: str) -> tuple[str, list[d
         user_id=USER_ID,
         session_id=session_id,
         new_message=content,
-        run_config=RunConfig(max_llm_calls=12),
+        run_config=RunConfig(max_llm_calls=10),
     ):
+        if event.is_final_response():
+            tool_call_counts.pop(event.invocation_id, None)
         for call in event.get_function_calls():
             steps[call.id] = {"tool": call.name, "args": dict(call.args or {}), "result": ""}
         for response in event.get_function_responses():

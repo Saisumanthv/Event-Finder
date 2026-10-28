@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { API_URL, ASSISTANT_URL, LEARNING_PATH_URL, RECOMMEND_URL } from "../config.js";
 import Card, { normalizeCard } from "./Card.jsx";
 import CardSections from "./CardSections.jsx";
+import Loader from "./Loader.jsx";
 import SearchBox from "./SearchBox.jsx";
 import ProfileForm, {
   isProfileEmpty,
@@ -211,7 +212,7 @@ export default function WebhookDraft() {
         </ProfileForm>
       </details>
 
-      {loading && <div className="spinner" role="status" aria-label="Loading" />}
+      {loading && <Loader />}
       {loading && loadingText && <p className="status">{loadingText}</p>}
       {error && <p className="status error">{error}</p>}
       {notice && <p className="status">{notice}</p>}
