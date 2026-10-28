@@ -135,22 +135,35 @@ h3 {
   text-transform: capitalize;
 }
 
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: center;
-  margin-top: 8px;
+.steps {
+  max-width: 720px;
+  margin: 12px auto 0;
+  text-align: left;
+  font-size: 14px;
+  color: #4b5563;
 }
 
-.chip {
-  padding: 3px 12px;
-  border-radius: 999px;
-  background: #e0e7ff;
-  color: #3730a3;
-  font-size: 13px;
+.steps summary {
+  cursor: pointer;
+  color: #4f46e5;
   font-weight: 600;
-  text-transform: capitalize;
+}
+
+.steps ol {
+  margin: 8px 0 0;
+  padding-left: 22px;
+}
+
+.steps li {
+  margin: 4px 0;
+}
+
+.step-detail {
+  color: #6b7280;
+}
+
+.step-result {
+  color: #166534;
 }
 
 .cost {
@@ -329,43 +342,6 @@ h3 {
 .section-title.paid {
   color: #92400e;
   border-color: #fcd34d;
-}
-
-.section-title.web {
-  color: #1d4ed8;
-  border-color: #93c5fd;
-}
-
-.web-note {
-  margin: 8px 0 0;
-  font-size: 13px;
-  color: #6b7280;
-}
-
-.web-search {
-  margin-top: 24px;
-}
-
-.web-search button {
-  padding: 11px 22px;
-  border: 1px solid #93c5fd;
-  border-radius: 10px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.web-search button:hover:not(:disabled) {
-  background: #dbeafe;
-}
-
-.web-search button:disabled {
-  color: #9ca3af;
-  border-color: #e5e7eb;
-  background: #f9fafb;
-  cursor: not-allowed;
 }
 
 .section-title.unknown {

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import re
 import time
 from datetime import date, datetime
@@ -13,13 +14,17 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from google.adk.tools import ToolContext
 from pydantic import BaseModel, Field
 
 from agent import (
+    build_assistant,
     enrich_items,
+    parse_json_text,
     parse_search_query,
     plan_learning_path,
     recommend_items,
+    run_assistant_turn,
     search_web,
 )
 from sources import SOURCES
@@ -52,6 +57,10 @@ class Profile(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str = Field(max_length=300)
+
+
+class AssistantRequest(BaseModel):
+    message: str = Field(max_length=500)
 
 
 class WebSearchRequest(BaseModel):
@@ -632,3 +641,244 @@ async def web_search(body: WebSearchRequest):
     except Exception as e:
         print(f"web-search failed: {e!r}")
         return {"results": [], "message": "Web search is unavailable right now."}
+
+
+def compact_item(item: dict) -> dict:
+    """What the assistant sees of an item: no link, short description."""
+    return {
+        "id": item["id"],
+        "type": item_type(item) or str(item.get("category", "")).lower(),
+        "title": item.get("title", ""),
+        "category": item.get("category", ""),
+        "date": item.get("date", ""),
+        "mode": item.get("mode", ""),
+        "cost": item.get("cost", ""),
+        "difficulty": item.get("difficulty", ""),
+        "source": item.get("source", ""),
+        "description": (item.get("description") or "")[:200],
+    }
+
+
+def remember(tool_context: ToolContext, items: list[dict]) -> None:
+    """Record the items a tool surfaced so only they can be picked in the answer."""
+    tool_context.state[f"items_{tool_context.function_call_id}"] = {i["id"]: i for i in items}
+
+
+async def search_listings(
+    tool_context: ToolContext,
+    listing_type: str = "",
+    mode: str = "",
+    level: str = "",
+    cost: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    keywords: str = "",
+) -> dict:
+    """Search the current event, hackathon and course listings with filters.
+
+    Args:
+        listing_type: "event", "hackathon" or "course"; empty searches all three.
+        mode: "online", "offline" or "hybrid"; empty for any.
+        level: "beginner", "intermediate" or "advanced"; empty for any.
+        cost: "free" or "paid"; empty for any.
+        date_from: earliest date as YYYY-MM-DD; empty for none.
+        date_to: latest date as YYYY-MM-DD; empty for none.
+        keywords: comma-separated topic words such as "python, machine learning".
+
+    Returns:
+        The total number of matches and up to 15 of them, soonest first.
+    """
+    try:
+        words = [w.strip() for w in keywords.split(",") if w.strip()]
+        filters = clean_filters(
+            {
+                "type": listing_type,
+                "mode": mode,
+                "level": level,
+                "cost": cost,
+                "date_from": date_from,
+                "date_to": date_to,
+                "keywords": words,
+            }
+        )
+        actions = [TYPE_ACTIONS[filters["type"]]] if "type" in filters else list(SOURCES)
+        items = await gather_items(actions)
+        found = sorted((i for i in items if matches_filters(i, filters)), key=date_sort_key)
+        shown = found[:15]
+        remember(tool_context, shown)
+        applied = ", ".join(f"{k}={v}" for k, v in filters.items()) or "no filters"
+        return {
+            "summary": f"{len(found)} listings found ({applied})",
+            "total": len(found),
+            "items": [compact_item(i) for i in shown],
+        }
+    except Exception as e:
+        print(f"search_listings failed: {e!r}")
+        return {"summary": "listing search failed", "total": 0, "items": []}
+
+
+async def get_details(tool_context: ToolContext, item_id: str) -> dict:
+    """Get the full details of one listing by the id returned from a search.
+
+    Args:
+        item_id: the id of a listing.
+
+    Returns:
+        Its description, summary, prerequisites, tags and location.
+    """
+    try:
+        items = await gather_items(list(SOURCES))
+        item = next((i for i in items if i["id"] == item_id), None)
+        if item is None:
+            return {"summary": "no listing with that id"}
+        remember(tool_context, [item])
+        return {
+            **compact_item(item),
+            "summary": f"details of {item['title'][:40]}",
+            "description": (item.get("description") or "")[:400],
+            "ai_summary": item.get("summary", ""),
+            "prerequisites": item.get("prerequisites", []),
+            "tags": item.get("tags", []),
+            "location": item.get("location", ""),
+        }
+    except Exception as e:
+        print(f"get_details failed: {e!r}")
+        return {"summary": "details lookup failed"}
+
+
+async def build_learning_path(tool_context: ToolContext, goal: str, max_steps: int = 4) -> dict:
+    """Build an ordered learning path of courses, hackathons and events for a goal.
+
+    Args:
+        goal: what the user wants to achieve, for example "get into machine learning".
+        max_steps: how many steps at most, between 2 and 6.
+
+    Returns:
+        The overview and the ordered steps, each with its id and why it comes next.
+    """
+    try:
+        max_steps = max(2, min(int(max_steps), 6))
+        items = [i for i in await gather_items(list(SOURCES)) if not is_past(i)]
+        with_types = [{**i, "type": item_type(i)} for i in items]
+        plan = await plan_learning_path(goal, with_types, max_steps, date.today().isoformat())
+        path = build_path(plan["path"], items, max_steps)
+        remember(tool_context, path)
+        return {
+            "summary": f"learning path with {len(path)} steps",
+            "overview": clean_reason(plan.get("overview"), 30),
+            "steps": [
+                {
+                    "step": s["step"],
+                    "id": s["id"],
+                    "type": s["type"],
+                    "title": s["title"],
+                    "why_next": s["why_next"],
+                }
+                for s in path
+            ],
+        }
+    except Exception as e:
+        print(f"build_learning_path failed: {e!r}")
+        return {"summary": "path planning failed", "steps": []}
+
+
+async def search_the_web(tool_context: ToolContext, query: str) -> dict:
+    """Search the whole web for events, hackathons or courses.
+
+    Slow and less accurate: use it only when the listings clearly do not cover the
+    request.
+
+    Args:
+        query: a short search query.
+
+    Returns:
+        Web results found, each with an id, type, title, date and cost when known.
+    """
+    try:
+        items, pages = await search_web(query, date.today().isoformat())
+        urls = await asyncio.gather(*(asyncio.to_thread(resolve_url, p["uri"]) for p in pages))
+        for page, url in zip(pages, urls):
+            page["url"] = url
+        cards = build_web_cards(items, pages)
+        remember(tool_context, cards)
+        return {
+            "summary": f"{len(cards)} results found on the web",
+            "items": [compact_item(c) for c in cards],
+        }
+    except Exception as e:
+        print(f"search_the_web failed: {e!r}")
+        return {"summary": "web search failed", "items": []}
+
+
+assistant_agent = build_assistant([search_listings, get_details, build_learning_path, search_the_web])
+
+URL_TOKEN = re.compile(r"\S*(?:https?://|www\.)\S*", re.IGNORECASE)
+
+
+def clean_answer(text) -> str:
+    """The assistant's sentences with any URL-like token removed."""
+    if not isinstance(text, str):
+        return ""
+    return " ".join(URL_TOKEN.sub("", text).split())[:600]
+
+
+def build_assistant_reply(final_text: str, items: dict) -> tuple[str, list[dict]]:
+    """Answer text plus the picked cards; only ids the tools returned can be picked."""
+    try:
+        data = parse_json_text(final_text)
+    except ValueError:
+        return clean_answer(final_text), []
+    answer = clean_answer(data.get("answer")) if isinstance(data, dict) else ""
+    picks = data.get("picks") if isinstance(data, dict) else None
+
+    cards = []
+    seen = set()
+    for pick in picks if isinstance(picks, list) else []:
+        pick_id = pick.get("id") if isinstance(pick, dict) else None
+        if not isinstance(pick_id, str) or pick_id not in items or pick_id in seen:
+            continue
+        seen.add(pick_id)
+        cards.append({**items[pick_id], "reason": clean_reason(pick.get("why"), 25)})
+        if len(cards) == 12:
+            break
+    return answer, cards
+
+
+def describe_step(step: dict) -> dict:
+    args = ", ".join(f"{k}: {v}" for k, v in step["args"].items() if v not in ("", None, []))
+    return {"tool": step["tool"], "detail": args, "result": step["result"]}
+
+
+@app.post("/assistant")
+async def assistant(body: AssistantRequest):
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    today = date.today()
+    prompt = f"today: {today.isoformat()} ({today:%A})\nrequest: {json.dumps(message)}"
+    try:
+        final_text, steps, items = await asyncio.wait_for(
+            run_assistant_turn(assistant_agent, prompt), timeout=240
+        )
+        answer, cards = build_assistant_reply(final_text, items)
+        if answer or cards:
+            return {
+                "answer": answer,
+                "steps": [describe_step(s) for s in steps],
+                "cards": cards,
+                "fallback": False,
+            }
+        print("assistant: empty reply")
+    except Exception as e:
+        print(f"assistant failed: {e!r}")
+
+    terms = keyword_filters(message)
+    found = [i for i in await gather_items(list(SOURCES)) if matches_filters(i, terms)]
+    cards = [{**i, "reason": ""} for i in sorted(found, key=date_sort_key)[:12]]
+    return {
+        "answer": "The assistant is unavailable right now, so these are plain keyword matches.",
+        "steps": [],
+        "cards": cards,
+        "fallback": True,
+    }

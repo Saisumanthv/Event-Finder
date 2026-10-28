@@ -1,11 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  API_URL,
-  LEARNING_PATH_URL,
-  RECOMMEND_URL,
-  SEARCH_URL,
-  WEB_SEARCH_URL,
-} from "../config.js";
+import { API_URL, ASSISTANT_URL, LEARNING_PATH_URL, RECOMMEND_URL } from "../config.js";
 import Card, { normalizeCard } from "./Card.jsx";
 import CardSections from "./CardSections.jsx";
 import SearchBox from "./SearchBox.jsx";
@@ -23,6 +17,13 @@ const BUTTONS = [
   { label: "New Courses", action: "new_courses" },
 ];
 
+const STEP_LABELS = {
+  search_listings: "Searched the listings",
+  get_details: "Checked an item's details",
+  build_learning_path: "Built a learning path",
+  search_the_web: "Searched the web",
+};
+
 function extractItemList(data) {
   if (Array.isArray(data)) return data;
   if (!data || typeof data !== "object") return null;
@@ -39,33 +40,16 @@ function normalizeCards(list) {
   return list.map(normalizeCard);
 }
 
-function filterChips(filters) {
-  const chips = ["type", "mode", "level", "cost"]
-    .filter((key) => filters[key])
-    .map((key) => filters[key]);
-  if (filters.date_from && filters.date_to) {
-    chips.push(`${filters.date_from} to ${filters.date_to}`);
-  } else if (filters.date_from) {
-    chips.push(`from ${filters.date_from}`);
-  } else if (filters.date_to) {
-    chips.push(`until ${filters.date_to}`);
-  }
-  return chips.concat(filters.keywords || []);
-}
-
 export default function WebhookDraft() {
   const [profile, setProfile] = useState(loadProfile);
   const [loading, setLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [heading, setHeading] = useState("");
-  const [chips, setChips] = useState([]);
   const [overview, setOverview] = useState("");
-  const [isPath, setIsPath] = useState(false);
-  const [lastQuery, setLastQuery] = useState("");
-  const [webCards, setWebCards] = useState([]);
-  const [webLoading, setWebLoading] = useState(false);
-  const [webMessage, setWebMessage] = useState("");
+  const [steps, setSteps] = useState([]);
+  const [ordered, setOrdered] = useState(false);
   const [cards, setCards] = useState([]);
   const [raw, setRaw] = useState(null);
 
@@ -73,41 +57,46 @@ export default function WebhookDraft() {
     saveProfile(profile);
   }, [profile]);
 
-  function startRequest() {
+  function startRequest(waitText = "") {
     setLoading(true);
+    setLoadingText(waitText);
     setError("");
     setNotice("");
     setHeading("");
-    setChips([]);
     setOverview("");
-    setIsPath(false);
-    setLastQuery("");
-    setWebCards([]);
-    setWebMessage("");
+    setSteps([]);
+    setOrdered(false);
     setCards([]);
     setRaw(null);
   }
 
-  async function handleWebSearch() {
-    setWebLoading(true);
-    setWebMessage("");
+  async function handleAsk(message) {
+    startRequest("The assistant is planning and searching. This can take a minute.");
     try {
-      const res = await fetch(WEB_SEARCH_URL, {
+      const res = await fetch(ASSISTANT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: lastQuery }),
+        body: JSON.stringify({ message }),
       });
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
       const data = await res.json();
-      const found = (data.results || []).map(normalizeCard);
-      setWebCards(found);
-      if (found.length === 0) {
-        setWebMessage(data.message || "The web search found nothing for that query.");
+      const picked = (data.cards || []).map(normalizeCard);
+      setCards(picked);
+      setOrdered(true);
+      setHeading("Assistant");
+      setOverview(data.answer || "");
+      setSteps(data.steps || []);
+      if (picked.some((c) => c.id.startsWith("web-"))) {
+        setNotice(
+          "Some picks came from a web search, not our listed sites. Check the page before you rely on dates and prices."
+        );
+      } else if (data.fallback) {
+        setNotice("Showing plain keyword matches while the assistant is unavailable.");
       }
     } catch (err) {
-      setWebMessage(err.message || "Something went wrong");
+      setError(err.message || "Something went wrong");
     } finally {
-      setWebLoading(false);
+      setLoading(false);
     }
   }
 
@@ -125,39 +114,12 @@ export default function WebhookDraft() {
       // the step's why_next line is shown in the card's highlighted reason slot
       setCards(path.map((step) => normalizeCard({ ...step, reason: step.why_next })));
       setHeading("Your learning path");
-      setIsPath(true);
+      setOrdered(true);
       setOverview(data.overview || "");
       if (path.length === 0) {
         setNotice(data.message || "Nothing in the current listings fits that goal yet.");
       } else if (data.fallback) {
         setNotice("Smart planning is unavailable, so this is a simple course, hackathon, event order.");
-      }
-    } catch (err) {
-      setError(err.message || "Something went wrong");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleSearch(query) {
-    startRequest();
-    try {
-      const res = await fetch(SEARCH_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
-      });
-      if (!res.ok) throw new Error(`Request failed (${res.status})`);
-      const data = await res.json();
-      const results = data.results || [];
-      setCards(results.map(normalizeCard));
-      setHeading("Search results");
-      setLastQuery(query);
-      setChips(filterChips(data.filters || {}));
-      if (results.length === 0) {
-        setNotice("No results match your search. Try different words or fewer filters.");
-      } else if (data.fallback) {
-        setNotice("Smart search is unavailable, so this is a plain keyword match.");
       }
     } catch (err) {
       setError(err.message || "Something went wrong");
@@ -199,7 +161,7 @@ export default function WebhookDraft() {
       }
 
       if (data?.status === "error") {
-        throw new Error(data.message || "The agent returned no results");
+        throw new Error(data.message || "No source returned any items");
       }
       const list = extractItemList(data);
       if (list) setCards(normalizeCards(list));
@@ -218,7 +180,12 @@ export default function WebhookDraft() {
         Find events, hackathons and courses to showcase your skills or learn new ones.
       </p>
 
-      <SearchBox onSearch={handleSearch} disabled={loading} />
+      <SearchBox
+        onSearch={handleAsk}
+        disabled={loading}
+        placeholder="Ask the assistant, e.g. I know Python and want a hackathon for my portfolio"
+        buttonLabel="Ask"
+      />
 
       <div className="or-divider">
         <span>or</span>
@@ -245,6 +212,7 @@ export default function WebhookDraft() {
       </details>
 
       {loading && <div className="spinner" role="status" aria-label="Loading" />}
+      {loading && loadingText && <p className="status">{loadingText}</p>}
       {error && <p className="status error">{error}</p>}
       {notice && <p className="status">{notice}</p>}
 
@@ -252,17 +220,23 @@ export default function WebhookDraft() {
 
       {heading && !loading && !error && <h2 className="results-heading">{heading}</h2>}
       {overview && <p className="overview">{overview}</p>}
-      {chips.length > 0 && (
-        <div className="chips">
-          {chips.map((c, i) => (
-            <span key={i} className="chip">
-              {c}
-            </span>
-          ))}
-        </div>
+
+      {steps.length > 0 && (
+        <details className="steps">
+          <summary>What the assistant did ({steps.length} steps)</summary>
+          <ol>
+            {steps.map((s, i) => (
+              <li key={i}>
+                <strong>{STEP_LABELS[s.tool] || s.tool}</strong>
+                {s.detail && <span className="step-detail"> ({s.detail})</span>}
+                {s.result && <span className="step-result"> → {s.result}</span>}
+              </li>
+            ))}
+          </ol>
+        </details>
       )}
 
-      {isPath ? (
+      {ordered ? (
         <div className="grid">
           {cards.map((c, i) => (
             <Card card={c} key={c.id || i} />
@@ -270,32 +244,6 @@ export default function WebhookDraft() {
         </div>
       ) : (
         <CardSections cards={cards} />
-      )}
-
-      {lastQuery && !loading && (
-        <div className="web-search">
-          <button onClick={handleWebSearch} disabled={webLoading}>
-            🌐 Search the web for more
-          </button>
-        </div>
-      )}
-      {webLoading && <div className="spinner" role="status" aria-label="Searching the web" />}
-      {webMessage && <p className="status">{webMessage}</p>}
-      {webCards.length > 0 && (
-        <section className="card-section">
-          <h3 className="section-title web">
-            From the web <span className="section-count">{webCards.length}</span>
-          </h3>
-          <p className="web-note">
-            Found by web search, not from our listed sites. Dates and prices may be less
-            accurate, so check the page before you rely on them.
-          </p>
-          <div className="grid">
-            {webCards.map((c, i) => (
-              <Card card={c} key={c.id || i} />
-            ))}
-          </div>
-        </section>
       )}
     </div>
   );
