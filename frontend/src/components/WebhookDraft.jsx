@@ -1,5 +1,12 @@
-import { useState } from "react";
-import { API_URL } from "../config.js";
+import { useEffect, useState } from "react";
+import { API_URL, RECOMMEND_URL } from "../config.js";
+import Card, { normalizeCard } from "./Card.jsx";
+import ProfileForm, {
+  isProfileEmpty,
+  loadProfile,
+  profileToRequest,
+  saveProfile,
+} from "./ProfileForm.jsx";
 import "../styles/WebhookDraft.css";
 
 const BUTTONS = [
@@ -21,38 +28,59 @@ function extractItemList(data) {
 }
 
 function normalizeCards(list) {
-  return list.slice(0, 10).map((item) => ({
-    title: item.title || "",
-    subtitle: item.subtitle || "",
-    category: item.category || "",
-    description: item.description || "",
-    date: item.date || "",
-    location: item.location || "",
-    mode: item.mode || "",
-    tags: Array.isArray(item.tags) ? item.tags.slice(0, 3) : [],
-    link: item.link || "",
-  }));
+  return list.slice(0, 10).map(normalizeCard);
 }
 
 export default function WebhookDraft() {
+  const [profile, setProfile] = useState(loadProfile);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [personalized, setPersonalized] = useState(false);
   const [cards, setCards] = useState([]);
   const [raw, setRaw] = useState(null);
+
+  useEffect(() => {
+    saveProfile(profile);
+  }, [profile]);
 
   async function handleClick({ action, label }) {
     setLoading(true);
     setError("");
+    setNotice("");
+    setPersonalized(false);
     setCards([]);
     setRaw(null);
+
+    // With a profile, ask for recommendations for this source; otherwise the default call.
+    const useProfile = !isProfileEmpty(profile);
     try {
-      const res = await fetch(API_URL, {
+      const res = await fetch(useProfile ? RECOMMEND_URL : API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, actionLabel: label }),
+        body: JSON.stringify(
+          useProfile
+            ? { action, profile: profileToRequest(profile), limit: 10 }
+            : { action, actionLabel: label }
+        ),
       });
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
       const data = await res.json();
+
+      if (useProfile) {
+        const recs = data.recommendations || [];
+        setCards(recs.map(normalizeCard));
+        setPersonalized(true);
+        if (recs.length === 0) {
+          setNotice(
+            data.message || "Nothing matches your profile. Clear the filters to see everything."
+          );
+        } else if (data.fallback) {
+          setNotice("Smart ranking is unavailable, so these are the closest matches.");
+        }
+        return;
+      }
+
       if (data?.status === "error") {
         throw new Error(data.message || "The agent returned no results");
       }
@@ -68,7 +96,12 @@ export default function WebhookDraft() {
 
   return (
     <div className="panel">
-      <h1>Workflow Trigger Panel</h1>
+      <h1>Event Finder</h1>
+      <p className="tagline">
+        Find events, hackathons and courses to showcase your skills or learn new ones.
+      </p>
+
+      <ProfileForm profile={profile} onChange={setProfile} disabled={loading} />
 
       <div className="buttons">
         {BUTTONS.map((b) => (
@@ -80,38 +113,15 @@ export default function WebhookDraft() {
 
       {loading && <p className="status">Loading...</p>}
       {error && <p className="status error">{error}</p>}
+      {notice && <p className="status">{notice}</p>}
 
       {raw && <pre className="raw">{JSON.stringify(raw, null, 2)}</pre>}
 
-      {!loading && !error && !raw && cards.length === 0 && null}
+      {personalized && cards.length > 0 && <h2 className="results-heading">Recommended for you</h2>}
 
       <div className="grid">
         {cards.map((c, i) => (
-          <div className="card" key={i}>
-            {c.category && <span className="category">{c.category}</span>}
-            <h3>{c.title}</h3>
-            {c.subtitle && <p className="subtitle">{c.subtitle}</p>}
-            {c.description && <p>{c.description}</p>}
-            <ul className="meta">
-              {c.date && <li>📅 {c.date}</li>}
-              {c.location && <li>📍 {c.location}</li>}
-              {c.mode && <li>💻 {c.mode}</li>}
-            </ul>
-            {c.tags.length > 0 && (
-              <div className="tags">
-                {c.tags.map((t, j) => (
-                  <span key={j} className="tag">
-                    {t}
-                  </span>
-                ))}
-              </div>
-            )}
-            {c.link && (
-              <a href={c.link} target="_blank" rel="noopener noreferrer">
-                View →
-              </a>
-            )}
-          </div>
+          <Card card={c} key={c.id || i} />
         ))}
       </div>
     </div>
