@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { API_URL, RECOMMEND_URL, SEARCH_URL } from "../config.js";
+import { API_URL, LEARNING_PATH_URL, RECOMMEND_URL, SEARCH_URL } from "../config.js";
 import Card, { normalizeCard } from "./Card.jsx";
 import SearchBox from "./SearchBox.jsx";
 import ProfileForm, {
@@ -29,7 +29,7 @@ function extractItemList(data) {
 }
 
 function normalizeCards(list) {
-  return list.slice(0, 10).map(normalizeCard);
+  return list.map(normalizeCard);
 }
 
 function filterChips(filters) {
@@ -53,6 +53,7 @@ export default function WebhookDraft() {
   const [notice, setNotice] = useState("");
   const [heading, setHeading] = useState("");
   const [chips, setChips] = useState([]);
+  const [overview, setOverview] = useState("");
   const [cards, setCards] = useState([]);
   const [raw, setRaw] = useState(null);
 
@@ -66,8 +67,36 @@ export default function WebhookDraft() {
     setNotice("");
     setHeading("");
     setChips([]);
+    setOverview("");
     setCards([]);
     setRaw(null);
+  }
+
+  async function handlePath(goal) {
+    startRequest();
+    try {
+      const res = await fetch(LEARNING_PATH_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal }),
+      });
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      const data = await res.json();
+      const path = data.path || [];
+      // the step's why_next line is shown in the card's highlighted reason slot
+      setCards(path.map((step) => normalizeCard({ ...step, reason: step.why_next })));
+      setHeading("Your learning path");
+      setOverview(data.overview || "");
+      if (path.length === 0) {
+        setNotice(data.message || "Nothing in the current listings fits that goal yet.");
+      } else if (data.fallback) {
+        setNotice("Smart planning is unavailable, so this is a simple course, hackathon, event order.");
+      }
+    } catch (err) {
+      setError(err.message || "Something went wrong");
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleSearch(query) {
@@ -81,7 +110,7 @@ export default function WebhookDraft() {
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
       const data = await res.json();
       const results = data.results || [];
-      setCards(results.slice(0, 20).map(normalizeCard));
+      setCards(results.map(normalizeCard));
       setHeading("Search results");
       setChips(filterChips(data.filters || {}));
       if (results.length === 0) {
@@ -107,7 +136,7 @@ export default function WebhookDraft() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           useProfile
-            ? { action, profile: profileToRequest(profile), limit: 10 }
+            ? { action, profile: profileToRequest(profile), limit: 100 }
             : { action, actionLabel: label }
         ),
       });
@@ -164,6 +193,17 @@ export default function WebhookDraft() {
         </div>
       </ProfileForm>
 
+      <div className="or-divider">
+        <span>or</span>
+      </div>
+
+      <SearchBox
+        onSearch={handlePath}
+        disabled={loading}
+        placeholder="Tell us your goal, e.g. get into machine learning"
+        buttonLabel="Build my path"
+      />
+
       {loading && <div className="spinner" role="status" aria-label="Loading" />}
       {error && <p className="status error">{error}</p>}
       {notice && <p className="status">{notice}</p>}
@@ -171,6 +211,7 @@ export default function WebhookDraft() {
       {raw && <pre className="raw">{JSON.stringify(raw, null, 2)}</pre>}
 
       {heading && !loading && !error && <h2 className="results-heading">{heading}</h2>}
+      {overview && <p className="overview">{overview}</p>}
       {chips.length > 0 && (
         <div className="chips">
           {chips.map((c, i) => (

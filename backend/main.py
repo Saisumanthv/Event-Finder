@@ -16,6 +16,7 @@ from agent import (
     enrich_items,
     parse_json_text,
     parse_search_query,
+    plan_learning_path,
     recommend_items,
     root_agent,
     run_agent_text,
@@ -56,9 +57,14 @@ class SearchRequest(BaseModel):
     query: str = Field(max_length=300)
 
 
+class PathRequest(BaseModel):
+    goal: str = Field(max_length=300)
+    max_steps: int = Field(4, ge=2, le=6)
+
+
 class RecommendRequest(BaseModel):
     profile: Profile = Profile()
-    limit: int = Field(5, ge=1, le=20)
+    limit: int = Field(5, ge=1, le=100)
     action: str | None = None  # restrict to one source; None means all sources
 
 
@@ -174,12 +180,12 @@ async def button_action(body: ButtonAction):
         return {"status": "error", "message": str(e)[:300], "items": []}
 
 
-def clean_reason(reason) -> str:
+def clean_reason(reason, max_words: int = 20) -> str:
     """Keep the reason to one short, link-free sentence."""
     if not isinstance(reason, str) or re.search(r"https?://|www\.", reason):
         return ""
     words = reason.split()
-    return " ".join(words[:20])
+    return " ".join(words[:max_words])
 
 
 def merge_recommendations(recs: list, items: list[dict], limit: int) -> list[dict]:
@@ -240,11 +246,16 @@ def item_text(item: dict) -> str:
     return " ".join(fields + list(item.get("tags") or [])).lower()
 
 
+def has_keyword(text: str, keyword: str) -> bool:
+    """True if `keyword` starts a word in `text`, so 'ai' matches 'AI' but not 'against'."""
+    return re.search(r"(?<![a-z0-9])" + re.escape(keyword), text) is not None
+
+
 def fallback_items(profile: Profile, items: list[dict], limit: int) -> list[dict]:
     """No-model fallback: filter by mode preference, then nearest date first."""
     terms = [t.strip().lower() for t in profile.skills + profile.interests if t.strip()]
     if terms:
-        items = [i for i in items if any(t in item_text(i) for t in terms)]
+        items = [i for i in items if any(has_keyword(item_text(i), t) for t in terms)]
 
     pref = profile.mode_preference.strip().lower()
     pool = [i for i in items if pref in str(i.get("mode", "")).lower()] if pref else items
@@ -284,6 +295,7 @@ MODE_WORDS = {
 STOPWORDS = {
     "a", "an", "and", "for", "find", "me", "show", "the", "to", "in", "on", "of",
     "with", "some", "any", "get", "that", "are", "is", "i", "want", "looking",
+    "into", "about", "from", "by", "at", "as", "my", "up", "do", "can", "how",
 }
 
 
@@ -323,7 +335,7 @@ def clean_filters(raw: dict) -> dict:
 def keyword_filters(query: str) -> dict:
     """No-model fallback: treat the meaningful words in the query as keywords."""
     words = re.findall(r"[a-z0-9+#.]+", query.lower())
-    keywords = [w for w in words if len(w) > 2 and w not in STOPWORDS]
+    keywords = [w for w in words if len(w) > 1 and w not in STOPWORDS]
     return {"keywords": keywords[:5]} if keywords else {}
 
 
@@ -347,7 +359,7 @@ def matches_filters(item: dict, filters: dict) -> bool:
             return False
     if "keywords" in filters:
         text = item_text(item)
-        if not any(k in text for k in filters["keywords"]):
+        if not any(has_keyword(text, k) for k in filters["keywords"]):
             return False
     return True
 
@@ -372,6 +384,100 @@ async def search(body: SearchRequest):
     items = await gather_items(actions)
     results = [item for item in items if matches_filters(item, filters)]
     return {"filters": filters, "results": results, "fallback": fallback}
+
+
+ACTION_TYPES = {action: kind for kind, action in TYPE_ACTIONS.items()}
+TYPE_ORDER = {"course": 0, "hackathon": 1, "event": 2}
+LEVEL_ORDER = {"beginner": 0, "intermediate": 1, "advanced": 2}
+
+
+def item_type(item: dict) -> str:
+    """course, hackathon or event, taken from the source encoded in the item id."""
+    return ACTION_TYPES.get(str(item.get("id", "")).split("-")[0], "")
+
+
+def is_past(item: dict) -> bool:
+    parsed = parse_date(item.get("date"))
+    return parsed is not None and parsed < date.today()
+
+
+def build_path(raw: list, items: list[dict], max_steps: int) -> list[dict]:
+    """Keep valid, unique ids in the model's order and merge in the source data.
+
+    A dated step that would fall before an earlier dated step is dropped, so the
+    path never goes backwards in time.
+    """
+    by_id = {item["id"]: item for item in items}
+    seen = set()
+    latest = None
+    steps = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        item = by_id.get(entry["id"])
+        if item is None or entry["id"] in seen:
+            continue
+        when = parse_date(item.get("date"))
+        if when and latest and when < latest:
+            continue
+        seen.add(entry["id"])
+        if when:
+            latest = max(latest, when) if latest else when
+        steps.append((item, clean_reason(entry.get("why_next"), 25)))
+        if len(steps) == max_steps:
+            break
+
+    return [
+        {**item, "type": item_type(item), "step": n, "why_next": why}
+        for n, (item, why) in enumerate(steps, 1)
+    ]
+
+
+def fallback_path(goal: str, items: list[dict], max_steps: int) -> list[dict]:
+    """No-model fallback: goal keywords, then courses, hackathons and events in turn."""
+    terms = keyword_filters(goal).get("keywords", [])
+    if terms:
+        items = [i for i in items if any(has_keyword(item_text(i), t) for t in terms)]
+
+    def order(item):
+        level = LEVEL_ORDER.get(item.get("difficulty"), 1)
+        return (TYPE_ORDER.get(item_type(item), 3), level, date_sort_key(item))
+
+    ranked = sorted(items, key=order)[:max_steps]
+    return [
+        {**item, "type": item_type(item), "step": n, "why_next": ""}
+        for n, item in enumerate(ranked, 1)
+    ]
+
+
+@app.post("/learning-path")
+async def learning_path(body: PathRequest):
+    goal = body.goal.strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="Empty goal")
+
+    items = [i for i in await gather_items(list(ACTION_URLS)) if not is_past(i)]
+    if not items:
+        return {"overview": "", "path": [], "fallback": False, "message": "No items available"}
+
+    try:
+        with_types = [{**i, "type": item_type(i)} for i in items]
+        plan = await plan_learning_path(
+            goal, with_types, body.max_steps, date.today().isoformat()
+        )
+        path = build_path(plan["path"], items, body.max_steps)
+        if path or not plan["path"]:
+            # an empty path from the model means "nothing fits", not a failure
+            return {
+                "overview": clean_reason(plan.get("overview"), 30) if path else "",
+                "path": path,
+                "fallback": False,
+            }
+        print("learning-path: model returned no valid ids")
+    except Exception as e:
+        print(f"learning-path failed: {e!r}")
+
+    return {"overview": "", "path": fallback_path(goal, items, body.max_steps), "fallback": True}
 
 
 @app.post("/recommend")

@@ -1,6 +1,11 @@
 import { useState } from "react";
 
-export default function SearchBox({ onSearch, disabled }) {
+export default function SearchBox({
+  onSearch,
+  disabled,
+  placeholder = "Try: free weekend hackathons for beginners, online",
+  buttonLabel = "Search",
+}) {
   const [query, setQuery] = useState("");
 
   function handleSubmit(e) {
@@ -13,12 +18,12 @@ export default function SearchBox({ onSearch, disabled }) {
       <input
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Try: free weekend hackathons for beginners, online"
+        placeholder={placeholder}
         maxLength={300}
         disabled={disabled}
       />
       <button type="submit" disabled={disabled || !query.trim()}>
-        Search
+        {buttonLabel}
       </button>
     </form>
   );

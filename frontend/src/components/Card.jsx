@@ -1,6 +1,8 @@
 export function normalizeCard(item) {
   return {
     id: item.id || "",
+    step: item.step || 0,
+    type: item.type || "",
     title: item.title || "",
     subtitle: item.subtitle || "",
     category: item.category || "",
@@ -21,8 +23,10 @@ export function normalizeCard(item) {
 export default function Card({ card }) {
   return (
     <div className="card">
-      {(card.category || card.difficulty) && (
+      {(card.step > 0 || card.category || card.difficulty) && (
         <div className="pills">
+          {card.step > 0 && <span className="step">Step {card.step}</span>}
+          {card.step > 0 && card.type && <span className="type">{card.type}</span>}
           {card.category && <span className="category">{card.category}</span>}
           {card.difficulty && (
             <span className={`difficulty ${card.difficulty}`}>{card.difficulty}</span>
