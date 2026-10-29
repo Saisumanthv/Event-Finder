@@ -5,8 +5,10 @@ import { openFlowChart } from "../utils/prepMapFlow.js";
 import { fetchPrepMap, peekPrepMap } from "../utils/prepMapStore.js";
 import { fetchVideos, peekVideos, youtubeSearchUrl } from "../utils/videoStore.js";
 import Loader from "./Loader.jsx";
+import TopicLearn from "./TopicLearn.jsx";
 
-function TopicVideos({ topic, subtopics }) {
+function TopicVideos({ topic, subtopics, skill, hackathon }) {
+  const [learning, setLearning] = useState(false);
   const [state, setState] = useState(() => {
     const ready = peekVideos(topic, subtopics);
     return ready ? { status: "done", data: ready } : { status: "idle" };
@@ -34,6 +36,14 @@ function TopicVideos({ topic, subtopics }) {
             {state.status === "loading" ? "Finding videos..." : "Top 2 videos"}
           </button>
         )}
+        <button
+          type="button"
+          className={`pill ${learning ? "accent" : ""}`}
+          aria-expanded={learning}
+          onClick={() => setLearning((open) => !open)}
+        >
+          🎓 Learn with AI
+        </button>
       </div>
       {state.status === "error" && <p className="status error">Could not load videos. Try again.</p>}
       {unavailable && (
@@ -63,6 +73,7 @@ function TopicVideos({ topic, subtopics }) {
           ))}
         </ul>
       )}
+      {learning && <TopicLearn topic={topic} skill={skill} hackathon={hackathon} subtopics={subtopics} />}
     </div>
   );
 }
@@ -284,7 +295,7 @@ export default function PrepMapModal({ card, onClose }) {
                                 ))}
                               </ul>
                             )}
-                            <TopicVideos topic={topic.name} subtopics={topic.subtopics} />
+                            <TopicVideos topic={topic.name} subtopics={topic.subtopics} skill={skill.name} hackathon={card.title} />
                           </div>
                         ))}
                       </div>

@@ -35,6 +35,7 @@ from agent import (
     search_web,
 )
 from sources import SOURCES
+import learn
 import rag
 
 REFRESH_AFTER_SECONDS = 6 * 3600  # older than this: refresh in the background, keep serving
@@ -106,6 +107,7 @@ app.add_middleware(
     expose_headers=["X-Listings-Updated"],
 )
 app.include_router(rag.router)
+app.include_router(learn.router)
 
 
 @app.middleware("http")

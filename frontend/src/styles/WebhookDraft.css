@@ -1096,3 +1096,130 @@ h3 {
   outline: 2px solid #818cf8;
   outline-offset: 1px;
 }
+
+.learn {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.learn-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #3730a3;
+}
+
+.learn-choices {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.learn-choices label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e0e7ff;
+  border-radius: 8px;
+  background: #f8faff;
+  color: #374151;
+  cursor: pointer;
+}
+
+.learn-choices label.checked {
+  border-color: #818cf8;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.lesson {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #e0e7ff;
+}
+
+.lesson h5 {
+  margin: 0 0 6px;
+  color: #3730a3;
+  font-size: 15px;
+}
+
+.lesson p {
+  margin: 0 0 8px;
+  color: #374151;
+  line-height: 1.55;
+}
+
+.lesson ul,
+.lesson ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  color: #374151;
+}
+
+.lesson li {
+  margin: 3px 0;
+}
+
+.lesson-label {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lesson.project {
+  padding: 12px;
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+  background: #f0fdf4;
+}
+
+.lesson-code {
+  overflow: hidden;
+  border-radius: 10px;
+  background: #111827;
+}
+
+.lesson-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #1f2937;
+  color: #9ca3af;
+  font-size: 12px;
+  text-transform: lowercase;
+}
+
+.lesson-code-bar button {
+  border: none;
+  background: none;
+  color: #c7d2fe;
+  font: inherit;
+  cursor: pointer;
+}
+
+.lesson-code pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  color: #e5e7eb;
+  font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.learn-note {
+  margin: 12px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+}
