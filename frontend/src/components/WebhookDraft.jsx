@@ -18,6 +18,16 @@ const BUTTONS = [
   { label: "New Courses", action: "new_courses" },
 ];
 
+// Shown under the spinner so a long wait has a reason.
+const WAIT_ASSISTANT =
+  "This takes a while because the assistant is an AI agent: it decides which tools to use, searches the listings (and sometimes the web) over several steps, then writes its answer.";
+const WAIT_PATH =
+  "This takes a while because the AI is comparing courses, hackathons and events across all the sources to put them in the right order.";
+const WAIT_RANKING =
+  "This takes a moment because the AI is ranking the listings against your profile.";
+const WAIT_LISTINGS =
+  "Loading the listings. If this is the first load, it is collecting live data from the websites and having the AI add summaries, which can take up to a minute.";
+
 const STEP_LABELS = {
   search_listings: "Searched the listings",
   get_details: "Checked an item's details",
@@ -72,7 +82,7 @@ export default function WebhookDraft() {
   }
 
   async function handleAsk(message) {
-    startRequest("The assistant is planning and searching. This can take a minute.");
+    startRequest(WAIT_ASSISTANT);
     try {
       const res = await fetch(ASSISTANT_URL, {
         method: "POST",
@@ -102,7 +112,7 @@ export default function WebhookDraft() {
   }
 
   async function handlePath(goal) {
-    startRequest();
+    startRequest(WAIT_PATH);
     try {
       const res = await fetch(LEARNING_PATH_URL, {
         method: "POST",
@@ -130,10 +140,9 @@ export default function WebhookDraft() {
   }
 
   async function handleClick({ action, label }) {
-    startRequest();
-
     // With a profile, ask for recommendations for this source; otherwise the default call.
     const useProfile = !isProfileEmpty(profile);
+    startRequest(useProfile ? WAIT_RANKING : WAIT_LISTINGS);
     try {
       const res = await fetch(useProfile ? RECOMMEND_URL : API_URL, {
         method: "POST",
@@ -213,7 +222,7 @@ export default function WebhookDraft() {
       </details>
 
       {loading && <Loader />}
-      {loading && loadingText && <p className="status">{loadingText}</p>}
+      {loading && loadingText && <p className="loading-note">{loadingText}</p>}
       {error && <p className="status error">{error}</p>}
       {notice && <p className="status">{notice}</p>}
 

@@ -295,6 +295,14 @@ h3 {
   box-sizing: border-box;
 }
 
+.loading-note {
+  max-width: 520px;
+  margin: -8px auto 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #6b7280;
+}
+
 .loader-time {
   position: absolute;
   inset: 0;
