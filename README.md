@@ -122,7 +122,34 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The frontend expects the backend at `http://127.0.0.1:8000` (see `frontend/src/config.js`), and the backend allows CORS only from `http://localhost:5173`.
+Open http://localhost:5173. Locally the frontend calls the backend at `http://127.0.0.1:8000`, and the backend accepts requests from `http://localhost:5173`. Both can be changed for deployment (see below).
+
+## Deployment (Render)
+
+Deploy the backend first, because the frontend needs its address.
+
+**1. Backend: Web Service.** Root Directory `backend/`.
+
+| Setting | Value |
+|---|---|
+| Build Command | `pip install uv && uv sync --frozen` |
+| Start Command | `uv run uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| `GOOGLE_API_KEY` | your Gemini key |
+| `PYTHON_VERSION` | `3.12.8` |
+
+**2. Frontend: Static Site.** Root Directory `frontend`.
+
+| Setting | Value |
+|---|---|
+| Build Command | `npm install && npm run build` |
+| Publish Directory | `dist` |
+| `VITE_API_URL` | the backend's URL, such as `https://your-backend.onrender.com` |
+
+`VITE_API_URL` is baked into the build, so after changing it you must redeploy the frontend.
+
+**3. Back on the backend,** add the environment variable `ALLOWED_ORIGINS` set to the frontend's URL, such as `https://your-frontend.onrender.com`. Without it the browser blocks every request (CORS). Use several comma-separated addresses if you have more than one.
+
+The disk on Render is temporary, so `cache.json` is lost on each deploy or restart and the next start takes about a minute and makes about 10 to 15 Gemini calls. Free instances also sleep when idle.
 
 ## API
 
@@ -182,6 +209,8 @@ frontend/
 | Cards enriched per model call | `ENRICH_CHUNK_SIZE` in `backend/main.py` | 20 |
 | Items taken per website | `LIMIT` in `sources_core.py`, `MAX_ITEMS` in the other `sources_*.py` files | 15 |
 | Assistant time limit | `timeout` in the `/assistant` endpoint | 240 seconds |
+| Frontend addresses allowed to call the API | `ALLOWED_ORIGINS` environment variable | `http://localhost:5173` |
+| Backend address used by the frontend | `VITE_API_URL` at build time | `http://127.0.0.1:8000` |
 
 ## Adding a source
 

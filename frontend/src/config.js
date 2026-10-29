@@ -1,6 +1,10 @@
-export const API_URL = "http://127.0.0.1:8000/button-action";
-export const RECOMMEND_URL = "http://127.0.0.1:8000/recommend";
-export const SEARCH_URL = "http://127.0.0.1:8000/search";
-export const LEARNING_PATH_URL = "http://127.0.0.1:8000/learning-path";
-export const WEB_SEARCH_URL = "http://127.0.0.1:8000/web-search";
-export const ASSISTANT_URL = "http://127.0.0.1:8000/assistant";
+// Set VITE_API_URL (for example https://your-backend.onrender.com) when building for
+// deployment; it is baked in at build time. Local development falls back to port 8000.
+const BASE_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+
+export const API_URL = `${BASE_URL}/button-action`;
+export const RECOMMEND_URL = `${BASE_URL}/recommend`;
+export const SEARCH_URL = `${BASE_URL}/search`;
+export const LEARNING_PATH_URL = `${BASE_URL}/learning-path`;
+export const WEB_SEARCH_URL = `${BASE_URL}/web-search`;
+export const ASSISTANT_URL = `${BASE_URL}/assistant`;
