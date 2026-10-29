@@ -517,8 +517,15 @@ h3 {
   margin-top: auto;
 }
 
-.prep-button {
+.card-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
   margin-left: auto;
+}
+
+.prep-button {
   padding: 6px 14px;
   border: 1px solid #c7d2fe;
   border-radius: 999px;
@@ -974,3 +981,118 @@ h3 {
   font-size: 12px;
 }
 
+
+.chat-modal {
+  height: min(720px, 88vh);
+}
+
+.chat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-status {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-suggestions p {
+  flex-basis: 100%;
+  margin: 0;
+  color: #374151;
+  font-size: 14px;
+}
+
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  max-width: 88%;
+}
+
+.chat-message.user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chat-message.assistant {
+  align-self: flex-start;
+}
+
+.chat-bubble {
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 14.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-message.user .chat-bubble {
+  border-bottom-right-radius: 4px;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: #fff;
+}
+
+.chat-message.assistant .chat-bubble {
+  border: 1px solid #e0e7ff;
+  border-bottom-left-radius: 4px;
+  background: #f8faff;
+  color: #111827;
+}
+
+.chat-bubble.typing {
+  color: #6b7280;
+  font-style: italic;
+}
+
+.chat-sources {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.chat-sources summary {
+  cursor: pointer;
+}
+
+.chat-sources p {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid #c7d2fe;
+  background: #f8faff;
+  overflow-wrap: anywhere;
+}
+
+.chat-footer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+}
+
+.chat-form input:focus {
+  outline: 2px solid #818cf8;
+  outline-offset: 1px;
+}

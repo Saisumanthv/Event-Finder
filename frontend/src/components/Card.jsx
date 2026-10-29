@@ -31,7 +31,7 @@ export function isHackathon(card) {
   );
 }
 
-export default function Card({ card, onPrepMap }) {
+export default function Card({ card, onPrepMap, onChat }) {
   const showPrepMap = Boolean(onPrepMap) && isHackathon(card);
   return (
     <div className="card">
@@ -74,24 +74,31 @@ export default function Card({ card, onPrepMap }) {
           ))}
         </div>
       )}
-      {(card.link || showPrepMap) && (
+      {(card.link || showPrepMap || onChat) && (
         <div className="card-actions">
           {card.link && (
             <a href={card.link} target="_blank" rel="noopener noreferrer">
               View →
             </a>
           )}
-          {showPrepMap && (
-            <button
-              type="button"
-              className="prep-button"
-              onMouseEnter={() => warmPrepMap(card)}
-              onFocus={() => warmPrepMap(card)}
-              onClick={() => onPrepMap(card)}
-            >
-              Prep Map
-            </button>
-          )}
+          <div className="card-buttons">
+            {onChat && (
+              <button type="button" className="prep-button" onClick={() => onChat(card)}>
+                💬 Ask AI
+              </button>
+            )}
+            {showPrepMap && (
+              <button
+                type="button"
+                className="prep-button"
+                onMouseEnter={() => warmPrepMap(card)}
+                onFocus={() => warmPrepMap(card)}
+                onClick={() => onPrepMap(card)}
+              >
+                Prep Map
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

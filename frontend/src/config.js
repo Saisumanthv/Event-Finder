@@ -9,4 +9,6 @@ export const LEARNING_PATH_URL = `${BASE_URL}/learning-path`;
 export const WEB_SEARCH_URL = `${BASE_URL}/web-search`;
 export const ASSISTANT_URL = `${BASE_URL}/assistant`;
 export const PREP_MAP_URL = `${BASE_URL}/prep-map`;
+export const CARD_CHAT_URL = `${BASE_URL}/card-chat`;
+export const CARD_CHAT_INGEST_URL = `${BASE_URL}/card-chat/ingest`;
 export const VIDEOS_URL = `${BASE_URL}/videos`;

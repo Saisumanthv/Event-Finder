@@ -35,6 +35,7 @@ from agent import (
     search_web,
 )
 from sources import SOURCES
+import rag
 
 REFRESH_AFTER_SECONDS = 6 * 3600  # older than this: refresh in the background, keep serving
 MAX_STALE_SECONDS = 12 * 3600  # older than this: wait for a fresh copy
@@ -104,6 +105,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Listings-Updated"],
 )
+app.include_router(rag.router)
 
 
 @app.middleware("http")

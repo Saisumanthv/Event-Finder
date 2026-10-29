@@ -3,6 +3,7 @@ import { API_URL, ASSISTANT_URL, LEARNING_PATH_URL, RECOMMEND_URL } from "../con
 import Card, { isHackathon, normalizeCard } from "./Card.jsx";
 import CardSections from "./CardSections.jsx";
 import Loader from "./Loader.jsx";
+import ChatModal from "./ChatModal.jsx";
 import PrepMapModal from "./PrepMapModal.jsx";
 import SearchBox from "./SearchBox.jsx";
 import { formatAge, readUpdated } from "../utils/age.js";
@@ -69,6 +70,8 @@ export default function WebhookDraft() {
   const [updated, setUpdated] = useState(null);
   const [prepCard, setPrepCard] = useState(null);
   const closePrepMap = useCallback(() => setPrepCard(null), []);
+  const [chatCard, setChatCard] = useState(null);
+  const closeChat = useCallback(() => setChatCard(null), []);
 
   useEffect(() => {
     saveProfile(profile);
@@ -268,14 +271,15 @@ export default function WebhookDraft() {
       {ordered ? (
         <div className="grid">
           {cards.map((c, i) => (
-            <Card card={c} key={c.id || i} onPrepMap={setPrepCard} />
+            <Card card={c} key={c.id || i} onPrepMap={setPrepCard} onChat={setChatCard} />
           ))}
         </div>
       ) : (
-        <CardSections cards={cards} onPrepMap={setPrepCard} />
+        <CardSections cards={cards} onPrepMap={setPrepCard} onChat={setChatCard} />
       )}
 
       {prepCard && <PrepMapModal card={prepCard} onClose={closePrepMap} />}
+      {chatCard && <ChatModal card={chatCard} onClose={closeChat} />}
     </div>
   );
 }
