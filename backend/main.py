@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -33,6 +34,12 @@ from sources import SOURCES
 
 CACHE_TTL_SECONDS = 600
 ENRICH_CHUNK_SIZE = 20
+# Frontend addresses allowed to call this API, comma-separated; set it when deploying.
+ALLOWED_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+    if origin.strip()
+]
 CACHE_FILE = Path(__file__).with_name("cache.json")
 
 
@@ -77,7 +84,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
