@@ -8,3 +8,4 @@ export const SEARCH_URL = `${BASE_URL}/search`;
 export const LEARNING_PATH_URL = `${BASE_URL}/learning-path`;
 export const WEB_SEARCH_URL = `${BASE_URL}/web-search`;
 export const ASSISTANT_URL = `${BASE_URL}/assistant`;
+export const PREP_MAP_URL = `${BASE_URL}/prep-map`;

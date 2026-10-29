@@ -1,3 +1,5 @@
+import { warmPrepMap } from "../utils/prepMapStore.js";
+
 export function normalizeCard(item) {
   return {
     id: item.id || "",
@@ -21,7 +23,16 @@ export function normalizeCard(item) {
   };
 }
 
-export default function Card({ card }) {
+export function isHackathon(card) {
+  return (
+    card.id.startsWith("hackathon_details-") ||
+    card.type === "hackathon" ||
+    card.category.toLowerCase() === "hackathon"
+  );
+}
+
+export default function Card({ card, onPrepMap }) {
+  const showPrepMap = Boolean(onPrepMap) && isHackathon(card);
   return (
     <div className="card">
       {(card.step > 0 || card.category || card.difficulty) && (
@@ -63,10 +74,25 @@ export default function Card({ card }) {
           ))}
         </div>
       )}
-      {card.link && (
-        <a href={card.link} target="_blank" rel="noopener noreferrer">
-          View →
-        </a>
+      {(card.link || showPrepMap) && (
+        <div className="card-actions">
+          {card.link && (
+            <a href={card.link} target="_blank" rel="noopener noreferrer">
+              View →
+            </a>
+          )}
+          {showPrepMap && (
+            <button
+              type="button"
+              className="prep-button"
+              onMouseEnter={() => warmPrepMap(card)}
+              onFocus={() => warmPrepMap(card)}
+              onClick={() => onPrepMap(card)}
+            >
+              Prep Map
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

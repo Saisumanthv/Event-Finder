@@ -6,3 +6,5 @@ __pycache__/
 dist/
 backend/cache.json
 backend/cache.tmp
+backend/prep_cache.json
+backend/prep_cache.tmp

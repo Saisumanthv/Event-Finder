@@ -1,13 +1,15 @@
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -15,13 +17,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from google.adk.tools import ToolContext
 from pydantic import BaseModel, Field
 
 from agent import (
     build_assistant,
+    build_prep_map,
     enrich_items,
     parse_json_text,
     parse_search_query,
@@ -32,8 +35,15 @@ from agent import (
 )
 from sources import SOURCES
 
-CACHE_TTL_SECONDS = 600
+REFRESH_AFTER_SECONDS = 6 * 3600  # older than this: refresh in the background, keep serving
+MAX_STALE_SECONDS = 12 * 3600  # older than this: wait for a fresh copy
 ENRICH_CHUNK_SIZE = 20
+# Times of day for the scheduled refresh (HH:MM, comma-separated, in REFRESH_TIMEZONE).
+DEFAULT_REFRESH_TIMES = "06:00,12:00,18:00"
+# Secret for POST /refresh, called by an external scheduler; the endpoint is off without it.
+REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN", "")
+# Single-session events: once their date has passed they are over, even before a refresh.
+ONE_OFF_SOURCES = {"Meetup", "Luma", "HasGeek"}
 # Frontend addresses allowed to call this API, comma-separated; set it when deploying.
 ALLOWED_ORIGINS = [
     origin.strip().rstrip("/")
@@ -72,13 +82,17 @@ async def warm_cache() -> None:
 
 
 warm_task = None
+schedule_task = None
+refresh_tasks: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global warm_task
+    global warm_task, schedule_task
     warm_task = asyncio.create_task(warm_cache())
+    schedule_task = asyncio.create_task(run_schedule())
     yield
+    schedule_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -87,7 +101,18 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Listings-Updated"],
 )
+
+
+@app.middleware("http")
+async def add_listings_updated(request: Request, call_next):
+    """Tell the page how old the oldest saved listings are (seconds since 1970)."""
+    response = await call_next(request)
+    updated = updated_at()
+    if updated is not None:
+        response.headers["X-Listings-Updated"] = str(int(updated))
+    return response
 
 
 class ButtonAction(BaseModel):
@@ -217,6 +242,33 @@ CARD_DEFAULTS = {
 }
 
 
+ENRICHED_FIELDS = ("summary", "difficulty", "prerequisites", "tags")
+
+
+def reuse_enrichment(items: list[dict], previous: list[dict]) -> list[dict]:
+    """Copy the model-made fields from the last refresh onto unchanged items.
+
+    Returns the items that still need the model: new ones, changed ones, and ones whose
+    earlier enrichment failed.
+    """
+    old = {i["id"]: i for i in previous if isinstance(i, dict) and "id" in i}
+    needs_model = []
+    for item in items:
+        before = old.get(item["id"])
+        unchanged = (
+            before
+            and before.get("summary")
+            and before.get("title") == item["title"]
+            and before.get("description") == item["description"]
+        )
+        if unchanged:
+            for field in ENRICHED_FIELDS:
+                item[field] = before.get(field, item.get(field))
+        else:
+            needs_model.append(item)
+    return needs_model
+
+
 def title_key(item: dict) -> str:
     return re.sub(r"[^a-z0-9]", "", str(item.get("title", "")).lower())
 
@@ -247,7 +299,8 @@ async def fetch_items(action: str) -> dict:
 
     data = {"status": "success", "action": action, "items": items}
     add_ids(action, data)
-    await enrich(items)
+    previous = item_cache.get(action, (0, []))[1]
+    await enrich(reuse_enrichment(items, previous))
     item_cache[action] = (time.time(), items)
     save_cache()
     return data
@@ -269,16 +322,128 @@ def start_fetch(action: str) -> asyncio.Task:
     return task
 
 
+def is_over(item: dict) -> bool:
+    day = str(item.get("date") or "")[:10]
+    return item.get("source") in ONE_OFF_SOURCES and bool(day) and day < date.today().isoformat()
+
+
+def visible(items: list[dict]) -> list[dict]:
+    """Drop single-session events that already happened since the last refresh."""
+    return [item for item in items if not is_over(item)]
+
+
+def updated_at(actions: list[str] | None = None) -> float | None:
+    """When the oldest of these categories was last refreshed (seconds since 1970)."""
+    times = [item_cache[a][0] for a in (actions or SOURCES) if a in item_cache]
+    return min(times) if times else None
+
+
 async def cached_items(action: str) -> list[dict]:
-    """Serve cached items at once; if they are stale, refresh in the background."""
+    """Serve the saved copy at once.
+
+    Past REFRESH_AFTER_SECONDS it also starts a background refresh; past MAX_STALE_SECONDS
+    the request waits for a fresh copy (and falls back to the old one if that fails).
+    """
     cached = item_cache.get(action)
     if cached:
-        if time.time() - cached[0] >= CACHE_TTL_SECONDS:
+        age = time.time() - cached[0]
+        if age >= MAX_STALE_SECONDS:
+            try:
+                await start_fetch(action)
+            except Exception as e:
+                print(f"refresh of {action} failed, serving the old copy: {e!r}")
+            cached = item_cache.get(action) or cached
+        elif age >= REFRESH_AFTER_SECONDS:
             start_fetch(action)
-        return cached[1]
+        return visible(cached[1])
     data = await start_fetch(action)
     items = data.get("items") if isinstance(data, dict) else None
-    return items if isinstance(items, list) else []
+    return visible(items) if isinstance(items, list) else []
+
+
+async def refresh_all(actions: list[str]) -> None:
+    """Refresh these categories now, whatever the age of the saved copy."""
+    results = await asyncio.gather(*(start_fetch(a) for a in actions), return_exceptions=True)
+    for action, result in zip(actions, results):
+        if isinstance(result, Exception):
+            print(f"scheduled refresh of {action} failed: {result!r}")
+
+
+def parse_refresh_times(text: str) -> list:
+    times = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            times.add(datetime.strptime(part, "%H:%M").time())
+        except ValueError:
+            print(f"ignoring invalid REFRESH_TIMES entry {part!r}")
+    return sorted(times)
+
+
+def refresh_timezone():
+    name = os.environ.get("REFRESH_TIMEZONE", "Asia/Kolkata")
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        print(f"unknown REFRESH_TIMEZONE {name!r}, using UTC")
+        return timezone.utc
+
+
+def next_run(now: datetime, times: list) -> tuple[datetime, int]:
+    """The first scheduled time after `now`, and its position in the day's list."""
+    for offset in (0, 1):
+        day = now.date() + timedelta(days=offset)
+        for index, at in enumerate(times):
+            when = datetime.combine(day, at, tzinfo=now.tzinfo)
+            if when > now:
+                return when, index
+    raise ValueError("no refresh times")
+
+
+def due_actions(index: int) -> list[str]:
+    """Events and hackathons change within hours; courses are refreshed once a day."""
+    return [a for a in SOURCES if a != "new_courses" or index == 0]
+
+
+async def run_schedule() -> None:
+    times = parse_refresh_times(os.environ.get("REFRESH_TIMES", DEFAULT_REFRESH_TIMES))
+    if not times:
+        print("scheduled refresh is off (REFRESH_TIMES is empty)")
+        return
+    zone = refresh_timezone()
+    print(f"scheduled refresh at {', '.join(t.strftime('%H:%M') for t in times)} ({zone})")
+    while True:
+        when, index = next_run(datetime.now(zone), times)
+        # sleep in short steps so a long wait stays accurate if the clock changes
+        while (remaining := (when - datetime.now(zone)).total_seconds()) > 0:
+            await asyncio.sleep(min(remaining, 60))
+        try:
+            await refresh_all(due_actions(index))
+        except Exception as e:
+            print(f"scheduled refresh failed: {e!r}")
+
+
+@app.post("/refresh", status_code=202)
+async def refresh(x_refresh_token: str | None = Header(default=None)):
+    """Start a refresh of every category. Meant for an external scheduler (cron-job.org)."""
+    if not REFRESH_TOKEN:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not x_refresh_token or not hmac.compare_digest(
+        x_refresh_token.encode(), REFRESH_TOKEN.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    task = asyncio.create_task(refresh_all(list(SOURCES)))
+    refresh_tasks.add(task)
+    task.add_done_callback(refresh_tasks.discard)
+    return {"status": "started", "categories": list(SOURCES)}
+
+
+@app.get("/health")
+async def health():
+    """A cheap check that also wakes a sleeping host; it never scrapes."""
+    return {"status": "ok", "updated": {a: int(item_cache[a][0]) for a in SOURCES if a in item_cache}}
 
 
 @app.post("/button-action")
@@ -953,3 +1118,123 @@ async def assistant(body: AssistantRequest):
         "cards": cards,
         "fallback": True,
     }
+
+
+class PrepMapRequest(BaseModel):
+    title: str = Field(max_length=200)
+    subtitle: str = Field("", max_length=200)
+    category: str = Field("", max_length=100)
+    description: str = Field("", max_length=1000)
+    summary: str = Field("", max_length=400)
+    difficulty: str = Field("", max_length=30)
+    tags: list[str] = Field(default_factory=list, max_length=10)
+    prerequisites: list[str] = Field(default_factory=list, max_length=10)
+    approach: str = Field("fundamentals", pattern="^(fundamentals|vibe)$")
+
+
+PREP_CACHE_SIZE = 400
+PREP_CACHE_FILE = Path(__file__).with_name("prep_cache.json")
+
+
+def load_prep_cache() -> dict[str, dict]:
+    """Prep maps saved by an earlier run, so a restart does not regenerate them."""
+    try:
+        saved = json.loads(PREP_CACHE_FILE.read_text(encoding="utf-8"))
+        return {k: v for k, v in saved.items() if isinstance(v, dict) and v.get("skills")}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+prep_cache: dict[str, dict] = load_prep_cache()
+prep_inflight: dict[str, asyncio.Task] = {}
+
+
+def remember_prep(key: str, result: dict) -> None:
+    """Keep a finished prep map in memory and on disk, dropping the oldest when full."""
+    while len(prep_cache) >= PREP_CACHE_SIZE:
+        prep_cache.pop(next(iter(prep_cache)))
+    prep_cache[key] = result
+    try:
+        temp = PREP_CACHE_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps(prep_cache), encoding="utf-8")
+        temp.replace(PREP_CACHE_FILE)
+    except OSError as e:
+        print(f"could not save prep cache: {e!r}")
+
+
+def clean_line(value, max_len: int) -> str:
+    """One short line of plain text; empty if it is not text or contains a link."""
+    if not isinstance(value, str) or URL_PATTERN.search(value):
+        return ""
+    return " ".join(value.split())[:max_len]
+
+
+def clean_prep_map(raw: dict) -> dict:
+    """Keep only well-formed, link-free skills, topics and subtopics, within size limits."""
+    skills = []
+    for skill in raw.get("skills", [])[:8]:
+        if not isinstance(skill, dict):
+            continue
+        raw_topics = skill.get("topics")
+        topics = []
+        for topic in (raw_topics if isinstance(raw_topics, list) else [])[:6]:
+            if not isinstance(topic, dict):
+                continue
+            name = clean_line(topic.get("name"), 80)
+            if name:
+                topics.append({"name": name, "subtopics": clean_texts(topic.get("subtopics"), 6, 80)})
+        name = clean_line(skill.get("name"), 80)
+        if name and topics:
+            skills.append({"name": name, "why": clean_reason(skill.get("why"), 25), "topics": topics})
+
+    basis = raw.get("basis") if raw.get("basis") in ("listing", "general") else "general"
+    fit_note = clean_line(raw.get("fit_note"), 300) if raw.get("fit") == "limited" else ""
+    return {
+        "overview": clean_line(raw.get("overview"), 400),
+        "basis": basis,
+        "fit_note": fit_note,
+        "skills": skills,
+    }
+
+
+def fallback_prep_map(item: dict) -> dict:
+    """No-model fallback: just the skills the listing itself names."""
+    names = clean_texts(item["prerequisites"] + item["tags"], 8, 80)
+    return {
+        "overview": "The AI prep map is unavailable, so this only lists the skills named in the listing.",
+        "basis": "listing",
+        "fit_note": "",
+        "skills": [{"name": n, "why": "", "topics": []} for n in names],
+        "fallback": True,
+    }
+
+
+async def generate_prep_map(item: dict, key: str) -> dict:
+    try:
+        hackathon = {k: v for k, v in item.items() if k != "approach"}
+        raw = await asyncio.wait_for(build_prep_map(hackathon, item["approach"]), timeout=120)
+        cleaned = clean_prep_map(raw)
+        if cleaned["skills"]:
+            result = {**cleaned, "fallback": False}
+            remember_prep(key, result)
+            return result
+        print("prep-map: the model returned no usable skills")
+    except Exception as e:
+        print(f"prep-map failed: {e!r}")
+    return fallback_prep_map(item)
+
+
+@app.post("/prep-map")
+async def prep_map(body: PrepMapRequest):
+    item = body.model_dump()
+    key = hashlib.sha1(json.dumps(item, sort_keys=True).encode()).hexdigest()
+    if key in prep_cache:
+        return prep_cache[key]
+
+    # Requests for the same map (a background prefetch and a click) share one model call.
+    task = prep_inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(generate_prep_map(item, key))
+        prep_inflight[key] = task
+        task.add_done_callback(lambda _done: prep_inflight.pop(key, None))
+    return await asyncio.shield(task)

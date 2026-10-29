@@ -1,6 +1,6 @@
 import Card from "./Card.jsx";
 
-export default function CardSections({ cards }) {
+export default function CardSections({ cards, onPrepMap }) {
   const groups = [
     { key: "free", title: "Free", items: cards.filter((c) => c.cost === "free") },
     { key: "paid", title: "Paid", items: cards.filter((c) => c.cost === "paid") },
@@ -18,7 +18,7 @@ export default function CardSections({ cards }) {
       </h3>
       <div className="grid">
         {g.items.map((c, i) => (
-          <Card card={c} key={c.id || i} />
+          <Card card={c} key={c.id || i} onPrepMap={onPrepMap} />
         ))}
       </div>
     </section>

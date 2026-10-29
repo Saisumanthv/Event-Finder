@@ -9,6 +9,7 @@ dependencies = [
     "google-adk",
     "python-dotenv",
     "requests",
+    "tzdata>=2026.6",
     "uvicorn",
 ]
 

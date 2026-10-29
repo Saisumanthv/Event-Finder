@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { API_URL, ASSISTANT_URL, LEARNING_PATH_URL, RECOMMEND_URL } from "../config.js";
-import Card, { normalizeCard } from "./Card.jsx";
+import Card, { isHackathon, normalizeCard } from "./Card.jsx";
 import CardSections from "./CardSections.jsx";
 import Loader from "./Loader.jsx";
+import PrepMapModal from "./PrepMapModal.jsx";
 import SearchBox from "./SearchBox.jsx";
+import { formatAge, readUpdated } from "../utils/age.js";
+import { prefetchPrepMaps } from "../utils/prepMapStore.js";
 import ProfileForm, {
   isProfileEmpty,
   loadProfile,
@@ -63,10 +66,18 @@ export default function WebhookDraft() {
   const [ordered, setOrdered] = useState(false);
   const [cards, setCards] = useState([]);
   const [raw, setRaw] = useState(null);
+  const [updated, setUpdated] = useState(null);
+  const [prepCard, setPrepCard] = useState(null);
+  const closePrepMap = useCallback(() => setPrepCard(null), []);
 
   useEffect(() => {
     saveProfile(profile);
   }, [profile]);
+
+  // Prepare the hackathons' prep maps in the background so the pop-up opens instantly.
+  useEffect(() => {
+    prefetchPrepMaps(cards.filter(isHackathon));
+  }, [cards]);
 
   function startRequest(waitText = "") {
     setLoading(true);
@@ -79,6 +90,7 @@ export default function WebhookDraft() {
     setOrdered(false);
     setCards([]);
     setRaw(null);
+    setUpdated(null);
   }
 
   async function handleAsk(message) {
@@ -90,6 +102,7 @@ export default function WebhookDraft() {
         body: JSON.stringify({ message }),
       });
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      setUpdated(readUpdated(res));
       const data = await res.json();
       const picked = (data.cards || []).map(normalizeCard);
       setCards(picked);
@@ -120,6 +133,7 @@ export default function WebhookDraft() {
         body: JSON.stringify({ goal }),
       });
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      setUpdated(readUpdated(res));
       const data = await res.json();
       const path = data.path || [];
       // the step's why_next line is shown in the card's highlighted reason slot
@@ -154,6 +168,7 @@ export default function WebhookDraft() {
         ),
       });
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      setUpdated(readUpdated(res));
       const data = await res.json();
 
       if (useProfile) {
@@ -246,15 +261,21 @@ export default function WebhookDraft() {
         </details>
       )}
 
+      {cards.length > 0 && updated && !loading && (
+        <p className="updated-note">Listings updated {formatAge(updated)}</p>
+      )}
+
       {ordered ? (
         <div className="grid">
           {cards.map((c, i) => (
-            <Card card={c} key={c.id || i} />
+            <Card card={c} key={c.id || i} onPrepMap={setPrepCard} />
           ))}
         </div>
       ) : (
-        <CardSections cards={cards} />
+        <CardSections cards={cards} onPrepMap={setPrepCard} />
       )}
+
+      {prepCard && <PrepMapModal card={prepCard} onClose={closePrepMap} />}
     </div>
   );
 }
