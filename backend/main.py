@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -522,7 +523,7 @@ def date_sort_key(item: dict):
 
 
 def item_text(item: dict) -> str:
-    keys = ("title", "subtitle", "category", "description", "summary")
+    keys = ("title", "subtitle", "category", "description", "summary", "location")
     fields = [item.get(k, "") for k in keys]
     return " ".join(fields + list(item.get("tags") or [])).lower()
 
@@ -1238,3 +1239,156 @@ async def prep_map(body: PrepMapRequest):
         prep_inflight[key] = task
         task.add_done_callback(lambda _done: prep_inflight.pop(key, None))
     return await asyncio.shield(task)
+
+
+# --- YouTube video suggestions for a skill (on demand, never part of the prep map) ---------------
+
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+YOUTUBE_DAILY_LIMIT = int(os.environ.get("YOUTUBE_DAILY_LIMIT", "90"))  # YouTube allows 100 searches a day
+VIDEO_CACHE_SECONDS = 7 * 24 * 3600  # YouTube's policy asks that stored API data is refreshed within 30 days
+VIDEO_CACHE_SIZE = 500
+VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+video_cache: dict[str, tuple[float, list[dict]]] = {}
+video_inflight: dict[str, asyncio.Task] = {}
+video_usage = {"day": "", "count": 0}
+video_blocked_until = 0.0
+
+
+class VideoRequest(BaseModel):
+    topic: str = Field(min_length=2, max_length=80)
+    context: str = Field("", max_length=80)  # the skill, used only when there are no subtopics
+    subtopics: list[str] = Field(default_factory=list, max_length=6)
+
+
+def youtube_day() -> str:
+    """YouTube's quota resets at midnight Pacific time."""
+    return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+
+
+VIDEO_STOPWORDS = {"and", "the", "for", "with", "using", "basics", "intro", "tutorial", "from", "your", "into"}
+MIN_VIDEO_SECONDS = 240  # drops Shorts and clips
+
+
+def keywords_of(text: str) -> list[str]:
+    words = re.findall(r"[a-z0-9+#]+", text.lower())
+    return [w for w in words if len(w) >= 3 and w not in VIDEO_STOPWORDS]
+
+
+def video_seconds(iso: str) -> int:
+    parts = re.fullmatch(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", iso or "")
+    d, h, m, sec = (int(x or 0) for x in parts.groups()) if parts else (0, 0, 0, 0)
+    return ((d * 24 + h) * 60 + m) * 60 + sec
+
+
+def mentions(text: str, word: str) -> bool:
+    return word[:5] in text  # prefix match, so "visualization" also finds "visualizing"
+
+
+def youtube_get(endpoint: str, params: dict) -> dict:
+    response = requests.get(
+        f"https://www.googleapis.com/youtube/v3/{endpoint}", params={**params, "key": YOUTUBE_API_KEY}, timeout=10
+    )
+    if response.status_code != 200:
+        # Never include the request URL in an error: it contains the key.
+        raise RuntimeError(f"YouTube answered {response.status_code}: {response.text[:200]}")
+    return response.json()
+
+
+def search_youtube(topic: str, subtopics: list[str], query: str) -> list[dict]:
+    """The two best videos for a topic. Titles, channels and links come from YouTube, never from the model.
+
+    One search brings back 10 candidates; code then drops Shorts and hashtag spam and keeps
+    the ones whose title or description actually mention the topic, so an unrelated
+    popular video does not win just because it ranked first.
+    """
+    found = youtube_get(
+        "search",
+        {"part": "snippet", "type": "video", "maxResults": 10, "q": query, "safeSearch": "strict", "relevanceLanguage": "en"},
+    )
+    candidates = {}
+    for entry in found.get("items", []):
+        video_id = (entry.get("id") or {}).get("videoId", "")
+        if VIDEO_ID_PATTERN.match(video_id):
+            candidates[video_id] = entry.get("snippet") or {}
+    if not candidates:
+        return []
+
+    # One cheap call (1 unit, separate from the 100-search limit) for duration and views.
+    details = youtube_get("videos", {"part": "contentDetails,statistics", "id": ",".join(candidates)})
+    topic_words = list(dict.fromkeys(keywords_of(topic)))
+    sub_words = list(dict.fromkeys(w for s in subtopics for w in keywords_of(s)))
+    need = max(1, len(topic_words) // 2)
+
+    ranked = []
+    for video in details.get("items", []):
+        snippet = candidates.get(video.get("id"))
+        if snippet is None:
+            continue
+        title = html.unescape(str(snippet.get("title", "")))
+        text = f"{title} {html.unescape(str(snippet.get('description', '')))}".lower()
+        if video_seconds((video.get("contentDetails") or {}).get("duration", "")) < MIN_VIDEO_SECONDS:
+            continue
+        if title.count("#") >= 3:
+            continue
+        topic_hits = sum(mentions(text, w) for w in topic_words)
+        if topic_hits < need:
+            continue
+        sub_hits = sum(mentions(text, w) for w in sub_words)
+        views = int((video.get("statistics") or {}).get("viewCount", 0) or 0)
+        ranked.append((topic_hits * 2 + sub_hits, views, video["id"], snippet, title))
+
+    ranked.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    return [
+        {
+            "title": title[:150],
+            "channel": html.unescape(str(snippet.get("channelTitle", "")))[:80],
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+        }
+        for _score, _views, video_id, snippet, title in ranked[:2]
+    ]
+
+
+@app.post("/videos")
+async def videos(body: VideoRequest):
+    global video_blocked_until
+    if not YOUTUBE_API_KEY:
+        return {"available": False, "videos": [], "reason": "not_configured"}
+
+    topic = " ".join(body.topic.split())
+    # The topic's own subtopics steer the search; the skill name alone can pull in a neighbouring topic.
+    subtopics = [" ".join(t.split())[:60] for t in body.subtopics[:2] if t.strip()]
+    extra = subtopics or [" ".join(body.context.split())]
+    query = " ".join([topic, *extra, "tutorial"]).replace("  ", " ")
+    key = query.lower()
+    cached = video_cache.get(key)
+    if cached and time.time() - cached[0] < VIDEO_CACHE_SECONDS:
+        return {"available": True, "videos": cached[1]}
+    if time.time() < video_blocked_until:
+        return {"available": False, "videos": [], "reason": "quota"}
+
+    today = youtube_day()
+    if video_usage["day"] != today:
+        video_usage.update(day=today, count=0)
+    if video_usage["count"] >= YOUTUBE_DAILY_LIMIT:
+        return {"available": False, "videos": [], "reason": "quota"}
+
+    task = video_inflight.get(key)
+    if task is None:
+        video_usage["count"] += 1
+        task = asyncio.create_task(asyncio.to_thread(search_youtube, topic, subtopics, query))
+        video_inflight[key] = task
+        task.add_done_callback(lambda _done: video_inflight.pop(key, None))
+    try:
+        found = await asyncio.shield(task)
+    except Exception as e:
+        print(f"videos failed: {e!r}")
+        if "quotaExceeded" in str(e) or "dailyLimitExceeded" in str(e):
+            video_blocked_until = time.time() + 3600
+            return {"available": False, "videos": [], "reason": "quota"}
+        return {"available": False, "videos": [], "reason": "error"}
+
+    while len(video_cache) >= VIDEO_CACHE_SIZE:
+        video_cache.pop(next(iter(video_cache)))
+    video_cache[key] = (time.time(), found)
+    return {"available": True, "videos": found}

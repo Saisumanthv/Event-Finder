@@ -12,13 +12,13 @@ const REPLACEMENTS = [
 ];
 
 // The built-in PDF fonts only cover Latin-1, so swap common symbols and drop the rest.
-function clean(text) {
+export function clean(text) {
   let result = String(text ?? "");
   for (const [pattern, replacement] of REPLACEMENTS) result = result.replace(pattern, replacement);
   return result.replace(/[^\x20-\x7E\xA0-\xFF]/g, "");
 }
 
-function slug(text) {
+export function slug(text) {
   const base = clean(text)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")

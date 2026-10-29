@@ -350,7 +350,8 @@ ASSISTANT_INSTRUCTION = (
     "description, so use get_details only when you truly cannot decide without it. "
     "Use build_learning_path when the user wants a plan, a roadmap or a sequence. Use "
     "search_the_web as soon as the listings clearly do not cover the request, and say "
-    "in your answer that those picks came from the web. Keep one call in reserve so "
+    "in your answer that those picks came from the web; it is slow, so call it at most once. "
+    "Keep one call in reserve so "
     "you can still answer. "
     "When done, respond with ONLY valid JSON, no markdown, in this shape: "
     '{"answer": "...", "picks": [{"id": "...", "why": "..."}]}. '
@@ -366,12 +367,21 @@ ASSISTANT_INSTRUCTION = (
 
 MAX_TOOL_CALLS = 6
 tool_call_counts: dict[str, int] = {}
+web_calls: dict[str, int] = {}
 
 
 def limit_tool_calls(tool, args, tool_context):
     """Refuse tool calls beyond MAX_TOOL_CALLS in one run so the model must answer."""
     run_id = tool_context.invocation_id
     tool_call_counts[run_id] = tool_call_counts.get(run_id, 0) + 1
+    # A web search takes 30-40 seconds, so a second one in the same run is refused.
+    if tool.name == "search_the_web":
+        web_calls[run_id] = web_calls.get(run_id, 0) + 1
+        if web_calls[run_id] > 1:
+            return {
+                "summary": "web search already used",
+                "note": "Only one web search is allowed per request. Answer with what you have.",
+            }
     if tool_call_counts[run_id] > MAX_TOOL_CALLS:
         return {
             "summary": "tool call limit reached",
@@ -417,6 +427,7 @@ async def run_assistant_turn(agent: LlmAgent, message: str) -> tuple[str, list[d
     ):
         if event.is_final_response():
             tool_call_counts.pop(event.invocation_id, None)
+            web_calls.pop(event.invocation_id, None)
         for call in event.get_function_calls():
             steps[call.id] = {"tool": call.name, "args": dict(call.args or {}), "result": ""}
         for response in event.get_function_responses():

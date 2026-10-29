@@ -758,6 +758,8 @@ h3 {
 .modal-footer-actions {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 10px;
 }
@@ -846,3 +848,129 @@ h3 {
   color: #9ca3af;
   font-size: 12px;
 }
+
+.skill-videos {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #e0e7ff;
+  border-radius: 12px;
+  background: #f8faff;
+}
+
+.skill-videos-title {
+  margin: 0 0 8px;
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.skill-videos-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  background: #fff;
+  color: #4338ca;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pill:hover:not(:disabled) {
+  border-color: #818cf8;
+  background: #eef2ff;
+}
+
+.pill.accent {
+  border-color: transparent;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: #fff;
+}
+
+.pill.accent:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4338ca, #4f46e5);
+}
+
+.pill:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.skill-videos .status {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.video-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.video-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.video-card:hover {
+  border-color: #a5b4fc;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.12);
+}
+
+.video-play {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #fee2e2;
+  color: #dc2626;
+  font-size: 13px;
+}
+
+.video-text {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.video-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.video-channel {
+  color: #6b7280;
+  font-size: 12px;
+}
+

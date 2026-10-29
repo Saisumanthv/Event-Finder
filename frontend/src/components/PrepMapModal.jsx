@@ -1,8 +1,71 @@
 import { useEffect, useState } from "react";
 import { APPROACHES, isAiRelated } from "../utils/approaches.js";
 import { downloadPrepMapPdf } from "../utils/prepMapPdf.js";
+import { openFlowChart } from "../utils/prepMapFlow.js";
 import { fetchPrepMap, peekPrepMap } from "../utils/prepMapStore.js";
+import { fetchVideos, peekVideos, youtubeSearchUrl } from "../utils/videoStore.js";
 import Loader from "./Loader.jsx";
+
+function TopicVideos({ topic, subtopics }) {
+  const [state, setState] = useState(() => {
+    const ready = peekVideos(topic, subtopics);
+    return ready ? { status: "done", data: ready } : { status: "idle" };
+  });
+
+  async function load() {
+    setState({ status: "loading" });
+    try {
+      setState({ status: "done", data: await fetchVideos(topic, subtopics) });
+    } catch (err) {
+      setState({ status: "error" });
+    }
+  }
+
+  const data = state.data;
+  const unavailable = state.status === "done" && !data.available;
+  return (
+    <div className="skill-videos">
+      <div className="skill-videos-row">
+        <a className="pill" href={youtubeSearchUrl(topic, subtopics)} target="_blank" rel="noopener noreferrer">
+          ▶ Search YouTube ↗
+        </a>
+        {state.status !== "done" && (
+          <button type="button" className="pill accent" disabled={state.status === "loading"} onClick={load}>
+            {state.status === "loading" ? "Finding videos..." : "Top 2 videos"}
+          </button>
+        )}
+      </div>
+      {state.status === "error" && <p className="status error">Could not load videos. Try again.</p>}
+      {unavailable && (
+        <p className="status">
+          {data.reason === "quota"
+            ? "Video suggestions have reached today's limit. Use the YouTube search link."
+            : "Video suggestions are not available right now. Use the YouTube search link."}
+        </p>
+      )}
+      {state.status === "done" && data.available && data.videos.length === 0 && (
+        <p className="status">No videos found. Try the YouTube search link.</p>
+      )}
+      {state.status === "done" && data.videos.length > 0 && (
+        <ul className="video-list">
+          {data.videos.map((v) => (
+            <li key={v.url}>
+              <a className="video-card" href={v.url} target="_blank" rel="noopener noreferrer">
+                <span className="video-play" aria-hidden="true">
+                  ▶
+                </span>
+                <span className="video-text">
+                  <span className="video-title">{v.title}</span>
+                  <span className="video-channel">{v.channel}</span>
+                </span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export default function PrepMapModal({ card, onClose }) {
   const tabs = isAiRelated(card) ? APPROACHES : APPROACHES.slice(0, 1);
@@ -221,6 +284,7 @@ export default function PrepMapModal({ card, onClose }) {
                                 ))}
                               </ul>
                             )}
+                            <TopicVideos topic={topic.name} subtopics={topic.subtopics} />
                           </div>
                         ))}
                       </div>
@@ -239,6 +303,17 @@ export default function PrepMapModal({ card, onClose }) {
           </p>
           <div className="modal-footer-actions">
             {pdfError && <span className="status error">{pdfError}</span>}
+            <button
+              type="button"
+              className="modal-button"
+              disabled={!data || skills.length === 0}
+              onClick={() => {
+                const opened = openFlowChart(card, tabs.length > 1 ? approach.label : "", data);
+                setPdfError(opened ? "" : "Your browser blocked the new tab. Allow pop-ups for this site.");
+              }}
+            >
+              ⎇ Flow chart
+            </button>
             <button
               type="button"
               className="modal-button primary"
